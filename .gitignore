@@ -1,0 +1,25 @@
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+.DS_Store
+
+# Local environments, runtime data, and logs
+backend/.venv/
+**/__pycache__/
+*.py[cod]
+data/**
+!data/.gitkeep
+logs/
+
+# Personal question banks and generated papers/solutions
+*.qb
+*.pdf
+
+# Local Python environment and application data
+backend/.venv/
+data/**
+!data/.gitkeep
+
+# Personal question banks and generated papers/solutions
+*.qb
+*.pdf

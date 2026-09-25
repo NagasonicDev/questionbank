@@ -1,0 +1,269 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: "IBM Plex Sans", sans-serif;
+  --font-display: "Fraunces", serif;
+  --font-mono: "IBM Plex Mono", monospace;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-ring-offset-background: var(--ring-offset-background);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+:root {
+  --radius: 0.5rem;
+
+  --background: oklch(0.95 0.009 259);
+  --foreground: oklch(0.22 0.018 270);
+  --card: oklch(0.99 0.004 255 / 72%);
+  --card-foreground: oklch(0.22 0.018 270);
+  --popover: oklch(0.985 0.006 255);
+  --popover-foreground: oklch(0.22 0.018 270);
+  --primary: oklch(0.38 0.047 164);
+  --primary-foreground: oklch(0.98 0.005 155);
+  --secondary: oklch(0.91 0.015 255);
+  --secondary-foreground: oklch(0.26 0.025 260);
+  --muted: oklch(0.91 0.015 255);
+  --muted-foreground: oklch(0.49 0.025 260);
+  --accent: oklch(0.9 0.028 60);
+  --accent-foreground: oklch(0.53 0.095 52);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.984 0.003 247.858);
+  --border: oklch(0.22 0.018 270 / 12%);
+  --input: oklch(0.22 0.018 270 / 16%);
+  --ring: oklch(0.53 0.095 52);
+  --ring-offset-background: var(--background);
+  --surface: oklch(0.99 0.004 255 / 52%);
+  --success: oklch(0.48 0.075 152);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: var(--background);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--accent);
+  --sidebar-accent-foreground: var(--accent-foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+}
+
+.dark {
+  --background: oklch(0.18 0.018 260);
+  --foreground: oklch(0.93 0.01 255);
+  --card: oklch(0.24 0.022 260 / 78%);
+  --card-foreground: oklch(0.984 0.003 247.858);
+  --popover: oklch(0.23 0.022 260);
+  --popover-foreground: oklch(0.984 0.003 247.858);
+  --primary: oklch(0.69 0.09 157);
+  --primary-foreground: oklch(0.16 0.02 160);
+  --secondary: oklch(0.279 0.041 260.031);
+  --secondary-foreground: oklch(0.984 0.003 247.858);
+  --muted: oklch(0.279 0.041 260.031);
+  --muted-foreground: oklch(0.7 0.025 255);
+  --accent: oklch(0.32 0.04 55);
+  --accent-foreground: oklch(0.72 0.11 55);
+  --destructive: oklch(0.704 0.191 22.216);
+  --destructive-foreground: oklch(0.984 0.003 247.858);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.551 0.027 264.364);
+  --ring-offset-background: var(--background);
+  --surface: oklch(0.3 0.02 260 / 55%);
+  --success: oklch(0.7 0.1 150);
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: var(--background);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--accent);
+  --sidebar-accent-foreground: var(--accent-foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+}
+
+@theme inline {
+  --color-surface: var(--surface);
+  --color-success: var(--success);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    letter-spacing: 0;
+  }
+  button,
+  a,
+  input,
+  textarea {
+    letter-spacing: 0;
+  }
+}
+
+/* Panels and other custom design-system utilities */
+@utility panel {
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) + 0.25rem);
+  background: var(--card);
+  box-shadow:
+    0 1px 1px color-mix(in oklab, var(--foreground) 4%, transparent);
+  backdrop-filter: blur(14px);
+}
+
+@utility label {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  line-height: 1rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted-foreground);
+}
+
+/* Ambient colour wash behind everything */
+.global-loading-track {
+  position: fixed;
+  z-index: 60;
+  inset: 0 0 auto;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.global-loading-bar {
+  width: 38%;
+  height: 100%;
+  background: var(--accent-foreground);
+  box-shadow: 0 0 10px color-mix(in oklab, var(--accent-foreground) 55%, transparent);
+  animation: loading-progress 1.2s ease-in-out infinite;
+}
+
+@keyframes loading-progress {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(270%); }
+}
+
+.ledger-wash {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      circle at 5% 0%,
+      color-mix(in oklab, oklch(0.75 0.08 230) 24%, transparent),
+      transparent 34%
+    ),
+    radial-gradient(
+      circle at 100% 35%,
+      color-mix(in oklab, oklch(0.72 0.08 285) 15%, transparent),
+      transparent 36%
+    ),
+    radial-gradient(
+      circle at 40% 110%,
+      color-mix(in oklab, oklch(0.78 0.08 170) 18%, transparent),
+      transparent 38%
+    );
+}
+
+/* Ruled-paper effect for exam-style question surfaces */
+.question-paper {
+  background-image: linear-gradient(
+    to bottom,
+    transparent 31px,
+    color-mix(in oklab, var(--border) 40%, transparent) 32px
+  );
+  background-size: 100% 32px;
+}
+
+/* Fixed cream/ink look for test paper previews (never obeys dark mode) */
+.paper-preview {
+  min-height: 360px;
+  border: 1px solid var(--border);
+  background: oklch(0.99 0.004 80);
+  color: oklch(0.22 0.01 70);
+  padding: 2rem;
+  box-shadow: 0 10px 28px oklch(0.2 0.02 260 / 10%);
+}
+
+.answer-reveal {
+  animation: reveal 0.28s ease both;
+}
+
+@keyframes reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Equation blocks should never overflow their container on narrow screens */
+.katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.25rem 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
