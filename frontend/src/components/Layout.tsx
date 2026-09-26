@@ -7,6 +7,7 @@ import { useTheme } from "../hooks/useTheme";
 import { CourseSelector } from "./CourseSelector";
 import { RecentQuestionsSidebar } from "./RecentQuestionsSidebar";
 import { Button } from "./ui/button";
+import { useActiveCourse } from "../hooks/useActiveCourse";
 
 const NAV = [
   { to: "/", label: "Dashboard", end: true },
@@ -23,6 +24,7 @@ const linkBase =
 const linkActive = "bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground";
 
 export function Layout() {
+  const { courseId } = useActiveCourse();
   const { theme, toggle } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
   const isFetching = useIsFetching() > 0;
@@ -105,8 +107,8 @@ export function Layout() {
         )}
       </header>
 
-      <div className="relative z-10 mx-auto grid max-w-[1500px] gap-6 px-4 py-6 md:grid-cols-[238px_minmax(0,1fr)] sm:px-5">
-        <RecentQuestionsSidebar />
+      <div className={cn("relative z-10 mx-auto grid max-w-[1500px] gap-6 px-4 py-6 sm:px-5", courseId && "md:grid-cols-[238px_minmax(0,1fr)]")}>
+        {courseId && <RecentQuestionsSidebar />}
         <main className="min-w-0">
           <Outlet />
         </main>
