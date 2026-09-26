@@ -3,8 +3,9 @@ import { InlineMath, BlockMath } from "react-katex";
 import "katex/dist/katex.min.css";
 import type { ContentBlock, Question } from "../api/types";
 import { assetUrl } from "../api/client";
+import { formatQuestionType } from "../lib/questionTypes";
 import { Meta, Panel } from "./system";
-import { MathText } from "./MathText";
+import { MathText, normalizeEquationLatex } from "./MathText";
 
 function Block({ block }: { block: ContentBlock }) {
   const c = block.content;
@@ -18,10 +19,10 @@ function Block({ block }: { block: ContentBlock }) {
     case "equation":
       return c.display ? (
         <div className="my-1">
-          <BlockMath math={c.latex} />
+          <BlockMath math={normalizeEquationLatex(String(c.latex ?? ""))} />
         </div>
       ) : (
-        <InlineMath math={c.latex} />
+        <InlineMath math={normalizeEquationLatex(String(c.latex ?? ""))} />
       );
 
     case "image":
@@ -172,8 +173,6 @@ export function QuestionReader({ question, selectedChoice, onSelectChoice, submi
         })}
       </div>}
 
-      <SourceLine source={question.source} />
-
       {question.parts.length > 0 && (
         <div className="mt-6 space-y-6">
           {question.parts.map((part) => (
@@ -187,6 +186,8 @@ export function QuestionReader({ question, selectedChoice, onSelectChoice, submi
           ))}
         </div>
       )}
+
+      <SourceLine source={question.source} />
     </article>
   );
 }
@@ -207,7 +208,10 @@ export function AnswerReveal({ question }: { question: Question }) {
   const hasMarking = question.marking_criteria.length > 0;
   const hasAnswer = question.answer.length > 0;
   const hasSolution = question.solution.length > 0;
-  if (!hasMarking && !hasAnswer && !hasSolution) {
+  const partsWithContent = question.parts.filter(
+    (part) => part.marking_criteria.length > 0 || part.answer.length > 0 || part.solution.length > 0
+  );
+  if (!hasMarking && !hasAnswer && !hasSolution && partsWithContent.length === 0) {
     return (
       <div className="answer-reveal border-t border-border bg-surface/60 px-6 py-5">
         <p className="text-sm italic text-muted-foreground">
@@ -233,6 +237,34 @@ export function AnswerReveal({ question }: { question: Question }) {
           <BlockList blocks={question.solution} />
         </AnswerPart>
       )}
+      {partsWithContent.map((part, index) => (
+        <section key={part.question_id} className="border-t border-border px-6 py-5 sm:px-8">
+          <h3 className="mb-4 font-display text-lg font-semibold">
+            Part {part.part_label || index + 1}
+            {part.marks != null && <span className="ml-2 font-sans text-sm font-normal text-muted-foreground">[{part.marks} marks]</span>}
+          </h3>
+          <div className="space-y-5">
+            {part.marking_criteria.length > 0 && (
+              <div>
+                <h4 className="font-display font-semibold">Marking guide</h4>
+                <div className="mt-2"><MarkingGuideTable blocks={part.marking_criteria} /></div>
+              </div>
+            )}
+            {part.answer.length > 0 && (
+              <div>
+                <h4 className="font-display font-semibold">Answer</h4>
+                <div className="mt-2 text-sm leading-6 text-muted-foreground"><BlockList blocks={part.answer} /></div>
+              </div>
+            )}
+            {part.solution.length > 0 && (
+              <div>
+                <h4 className="font-display font-semibold">Worked solution</h4>
+                <div className="mt-2 text-sm leading-6 text-muted-foreground"><BlockList blocks={part.solution} /></div>
+              </div>
+            )}
+          </div>
+        </section>
+      ))}
     </div>
   );
 }
@@ -254,11 +286,11 @@ export function QuestionSurface({
   const num = question.source?.original_question_no;
   const label = num
     ? `Question ${num}`
-    : question.type_key.replace(/_/g, " ").toUpperCase();
+    : formatQuestionType(question.type_key);
   return (
     <Panel className="overflow-hidden">
       <div className="flex flex-wrap gap-3 border-b border-border px-6 py-4">
-        <Meta>{question.type_key.replace(/_/g, " ")}</Meta>
+        <Meta>{formatQuestionType(question.type_key)}</Meta>
         {question.difficulty != null && <Meta>Difficulty {question.difficulty}</Meta>}
         {question.marks != null && <Meta>{question.marks} marks</Meta>}
         {question.source?.name && (

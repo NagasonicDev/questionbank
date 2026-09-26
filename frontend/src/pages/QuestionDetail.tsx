@@ -3,6 +3,7 @@ import { useParams, Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Eye, Pencil } from "lucide-react";
 import { api } from "../api/client";
+import { formatQuestionType } from "../lib/questionTypes";
 import { LoadingState, PageHeader, Panel } from "../components/system";
 import { QuestionSurface } from "../components/QuestionReader";
 import { Button } from "../components/ui/button";
@@ -70,7 +71,8 @@ export function QuestionDetail() {
           question={question}
           submitted={showAnswer}
           footer={
-            question.answer.length > 0 || question.solution.length > 0 ? (
+            question.answer.length > 0 || question.solution.length > 0 || question.marking_criteria.length > 0 ||
+            question.parts.some((part) => part.answer.length > 0 || part.solution.length > 0 || part.marking_criteria.length > 0) ? (
               <Button variant="outline" className="w-full" onClick={() => setShowAnswer((s) => !s)}>
                 <Eye />
                 {showAnswer ? "Hide answer" : "Show answer"}
@@ -89,7 +91,7 @@ export function QuestionDetail() {
           <dl className="mt-4 space-y-4">
             <div>
               <dt className="label">Type</dt>
-              <dd className="mt-1 text-sm">{question.type_key.replace(/_/g, " ")}</dd>
+              <dd className="mt-1 text-sm">{formatQuestionType(question.type_key)}</dd>
             </div>
             {question.difficulty != null && (
               <div>

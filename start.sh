@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Local Question Bank ??? one-click launcher (macOS/Linux)
+# Quaestio ??? one-click launcher (macOS/Linux)
 #
 # The app is completely client-side: everything (courses, questions, images,
 # past tests) lives in your browser's storage. This launcher just installs
@@ -8,7 +8,7 @@
 set -e
 cd "$(dirname "$0")"
 
-echo "== Local Question Bank =="
+echo "== Quaestio =="
 echo
 
 if ! command -v node >/dev/null 2>&1; then
@@ -36,9 +36,9 @@ echo
 
 ( sleep 1.5
   if command -v open >/dev/null 2>&1; then
-    open http://localhost:8420/questionbank/
+    open http://localhost:8420/quaestio/
   elif command -v xdg-open >/dev/null 2>&1; then
-    xdg-open http://localhost:8420/questionbank/
+    xdg-open http://localhost:8420/quaestio/
   fi
 ) &
 

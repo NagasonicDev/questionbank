@@ -1,6 +1,8 @@
-import { useState, type FormEvent } from "react";
-import { ArrowLeft, Plus, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { ArrowLeft, Plus, Save, Trash2 } from "lucide-react";
 import { api } from "../api/client";
+import { formatQuestionType } from "../lib/questionTypes";
 import { ToggleButton } from "./FilterMenu";
 import { BlockEditor, blocksToPayload, emptyBlock, type EditableBlock } from "./BlockEditor";
 import type { CourseFullConfig, ContentBlock, CourseNode, Question } from "../api/types";
@@ -67,6 +69,8 @@ interface QuestionEditorProps {
 }
 
 export function QuestionEditor({ config, existing, onSaved, onCancel }: QuestionEditorProps) {
+  const navigate = useNavigate();
+  const location = useLocation();
   const [typeKey, setTypeKey] = useState(existing?.type_key ?? config.question_types[0] ?? "short_answer");
   const [difficulty, setDifficulty] = useState<number | null>(existing?.difficulty ?? null);
   const [marks, setMarks] = useState<string>(existing?.marks?.toString() ?? "");
@@ -104,9 +108,51 @@ export function QuestionEditor({ config, existing, onSaved, onCancel }: Question
   })) ?? []);
 
   const [saving, setSaving] = useState(false);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const formRef = useRef<HTMLFormElement>(null);
+  const pendingNavigation = useRef<(() => void) | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (!hasUnsavedChanges) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    const onDocumentClick = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const link = target.closest<HTMLAnchorElement>("a[href^='#/']");
+      if (!link || link.target === "_blank") return;
+      const nextPath = link.getAttribute("href")?.slice(1).split(/[?#]/, 1)[0];
+      if (!nextPath || nextPath === location.pathname) return;
+      event.preventDefault();
+      event.stopPropagation();
+      pendingNavigation.current = () => navigate(nextPath);
+      setShowLeavePrompt(true);
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    document.addEventListener("click", onDocumentClick, true);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      document.removeEventListener("click", onDocumentClick, true);
+    };
+  }, [hasUnsavedChanges, location.pathname, navigate]);
+
+  const [showLeavePrompt, setShowLeavePrompt] = useState(false);
+
+  function requestLeave(action: () => void) {
+    if (!hasUnsavedChanges) {
+      action();
+      return;
+    }
+    pendingNavigation.current = action;
+    setShowLeavePrompt(true);
+  }
+
   function toggleNode(nodeId: string) {
+    setHasUnsavedChanges(true);
     setNodeIds((prev) => {
       const next = new Set(prev);
       if (next.has(nodeId)) {
@@ -172,19 +218,28 @@ export function QuestionEditor({ config, existing, onSaved, onCancel }: Question
           source_original_question_no: sourceOriginalNo || undefined,
         });
       }
-      onSaved();
+      const leave = pendingNavigation.current;
+      pendingNavigation.current = null;
+      if (leave) leave();
+      else onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save question");
+      if (pendingNavigation.current) setShowLeavePrompt(true);
     } finally {
       setSaving(false);
     }
   }
 
   return (
-    <form onSubmit={handleSubmit}>
+    <form ref={formRef} onSubmit={handleSubmit} onChange={() => setHasUnsavedChanges(true)} onClick={(event) => {
+      const button = (event.target as HTMLElement).closest("button");
+      if (button && button.type !== "submit" && !button.closest("[data-dismiss-editor]") && !button.closest("[data-editor-save]") ) {
+        setHasUnsavedChanges(true);
+      }
+    }}>
       <div className="space-y-5">
         <div className="mb-1 flex items-center gap-3">
-          <Button size="icon" variant="outline" onClick={onCancel}>
+          <Button type="button" size="icon" variant="outline" data-dismiss-editor onClick={() => requestLeave(onCancel)}>
             <ArrowLeft />
           </Button>
           <div>
@@ -220,7 +275,7 @@ export function QuestionEditor({ config, existing, onSaved, onCancel }: Question
                     <SelectContent>
                       {config.question_types.map((t) => (
                         <SelectItem key={t} value={t}>
-                          {t.replace(/_/g, " ")}
+                          {formatQuestionType(t)}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -344,7 +399,7 @@ export function QuestionEditor({ config, existing, onSaved, onCancel }: Question
 
         {error && <p className="text-xs text-destructive">{error}</p>}
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="outline" onClick={onCancel}>
+          <Button type="button" variant="outline" data-dismiss-editor onClick={() => requestLeave(onCancel)}>
             Cancel
           </Button>
           <Button type="submit" disabled={saving}>
@@ -352,6 +407,33 @@ export function QuestionEditor({ config, existing, onSaved, onCancel }: Question
           </Button>
         </div>
       </div>
+      {hasUnsavedChanges && (
+        <div role="status" className="fixed bottom-4 right-4 z-50 flex max-w-[calc(100vw-2rem)] items-center gap-4 rounded-lg border border-amber-500/40 bg-surface p-3 shadow-lg sm:bottom-6 sm:right-6">
+          <p className="text-sm font-medium">You have unsaved changes</p>
+          <Button type="button" size="sm" data-editor-save disabled={saving} onClick={() => formRef.current?.requestSubmit()}>
+            <Save />{saving ? "Saving…" : "Save now"}
+          </Button>
+        </div>
+      )}
+      {showLeavePrompt && (
+        <div className="fixed inset-0 z-[60] grid place-items-center bg-black/50 p-4" role="presentation">
+          <div role="alertdialog" aria-modal="true" aria-labelledby="unsaved-title" aria-describedby="unsaved-description" className="w-full max-w-md rounded-lg border border-border bg-surface p-5 shadow-xl">
+            <h2 id="unsaved-title" className="font-display text-lg font-semibold">Unsaved changes</h2>
+            <p id="unsaved-description" className="mt-2 text-sm text-muted-foreground">Would you like to save your changes before leaving?</p>
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <Button type="button" variant="ghost" onClick={() => { pendingNavigation.current = null; setShowLeavePrompt(false); }}>Cancel</Button>
+              <Button type="button" variant="outline" onClick={() => {
+                const leave = pendingNavigation.current;
+                pendingNavigation.current = null;
+                setHasUnsavedChanges(false);
+                setShowLeavePrompt(false);
+                leave?.();
+              }}>Discard changes</Button>
+              <Button type="button" disabled={saving} onClick={() => { setShowLeavePrompt(false); formRef.current?.requestSubmit(); }}>Save and leave</Button>
+            </div>
+          </div>
+        </div>
+      )}
     </form>
   );
 }

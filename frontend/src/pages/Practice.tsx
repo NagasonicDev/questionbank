@@ -20,6 +20,7 @@ export function Practice() {
   const [selectedNodes, setSelectedNodes] = useState<Set<string>>(new Set());
   const [typeKeys, setTypeKeys] = useState<string[]>([]);
   const [difficulties, setDifficulties] = useState<number[]>([]);
+  const [selectedTag, setSelectedTag] = useState("");
   const [institutionYears, setInstitutionYears] = useState<Record<string, number[]>>({});
   const { data: sourceOptions } = useQuery({ queryKey: ["question-source-options", courseId], queryFn: () => api.questionSourceOptions(courseId as string), enabled: !!courseId });
   const [avoidRecentDays, setAvoidRecentDays] = useState<number | null>(null);
@@ -44,13 +45,21 @@ export function Practice() {
   const facetCounts = useQuestionFilterCounts(
     courseId, config?.nodes ?? [], selectedNodes, typeKeys, difficulties
   );
+  const sourceFacetQuery = useQuery({
+    queryKey: ["question-source-facet-counts", courseId, selectedNodeIds, typeKeys, difficulties, selectedTag],
+    queryFn: () => api.questionSourceCounts(courseId as string, {
+      node_ids: selectedNodeIds, type: typeKeys, difficulties, tag: selectedTag || undefined,
+    }),
+    enabled: !!courseId,
+  });
 
   const { data: filteredQuestions } = useQuery({
-    queryKey: ["practice-matching-count", courseId, selectedNodeIds, typeKeys, difficulties, institutionYears],
+    queryKey: ["practice-matching-count", courseId, selectedNodeIds, typeKeys, difficulties, selectedTag, institutionYears],
     queryFn: () => api.listQuestions(courseId as string, {
       node_id: selectedNodeIds.length ? selectedNodeIds : undefined,
       type: typeKeys.length ? typeKeys : undefined,
       difficulty: difficulties.length ? difficulties : undefined,
+      tag: selectedTag || undefined,
       source_filters: Object.entries(institutionYears).map(([institution, years]) => ({ institution, years })),
       page_size: 1,
     }),
@@ -62,6 +71,7 @@ export function Practice() {
     setSelectedNodes(new Set());
     setTypeKeys([]);
     setDifficulties([]);
+    setSelectedTag("");
     setInstitutionYears({});
     setAvoidRecentDays(null);
   }
@@ -79,6 +89,7 @@ export function Practice() {
         node_id: selectedNodeIds.length ? selectedNodeIds : undefined,
         type: typeKeys.length ? typeKeys : undefined,
         difficulty: difficulties.length ? difficulties : undefined,
+        tag: selectedTag || undefined,
         source_filters: Object.entries(institutionYears).map(([institution, years]) => ({ institution, years })),
         exclude_question_ids: exclude.length ? exclude : undefined,
         exclude_recent_days: avoidRecentDays ?? undefined,
@@ -134,9 +145,13 @@ export function Practice() {
               typeKeys={typeKeys}
               onTypeKeysChange={setTypeKeys}
               difficultyLevels={config?.difficulty_levels ?? []}
+              tags={config?.tags ?? []}
+              selectedTag={selectedTag}
+              onSelectedTagChange={setSelectedTag}
               difficultyCounts={facetCounts.difficultyCounts}
               difficulties={difficulties}
               institutions={sourceOptions?.institutions}
+              institutionCounts={sourceFacetQuery.data}
               institutionYears={institutionYears}
               onInstitutionYearsChange={setInstitutionYears}
               onDifficultiesChange={setDifficulties}

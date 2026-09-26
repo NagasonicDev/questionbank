@@ -6,7 +6,7 @@ import type { Plugin } from 'vite'
 
 function requestLogging(): Plugin {
   return {
-    name: 'questionbank-request-logging',
+    name: 'quaestio-request-logging',
     configurePreviewServer(server) {
       const logFile = process.env.QB_SERVER_LOG || resolve(process.cwd(), '../logs/server.log')
       mkdirSync(dirname(logFile), { recursive: true })
@@ -17,7 +17,7 @@ function requestLogging(): Plugin {
           appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`, 'utf8')
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
-          console.error(`[questionbank] Could not write request log: ${message}`)
+          console.error(`[quaestio] Could not write request log: ${message}`)
         }
       }
 
@@ -38,7 +38,7 @@ function requestLogging(): Plugin {
 
 // https://vite.dev/config/
 export default defineConfig({
-  base: '/questionbank/',
+  base: '/quaestio/',
   plugins: [react(), requestLogging()],
   build: {
     // The backend serves this build directly and already uses /assets/ for

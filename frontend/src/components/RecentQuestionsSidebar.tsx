@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
+import { formatQuestionType } from "../lib/questionTypes";
 import { useActiveCourse } from "../hooks/useActiveCourse";
 import { cn } from "../lib/utils";
 import { MathText } from "./MathText";
@@ -59,7 +60,7 @@ export function RecentQuestionsSidebar() {
                     {item.status}
                   </span>
                   <span className="ml-auto font-mono text-[10px] text-muted-foreground">
-                    {item.type_key.replace(/_/g, " ")}
+                    {formatQuestionType(item.type_key)}
                   </span>
                 </div>
                 <p className="line-clamp-2 text-[12px] leading-snug text-foreground">

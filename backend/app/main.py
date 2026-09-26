@@ -40,7 +40,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Local Question Bank", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Quaestio", version="0.1.0", lifespan=lifespan)
 
 # CORS is only needed for the separate Vite dev server (npm run dev on
 # :5173); the single-process launcher below serves frontend and API from

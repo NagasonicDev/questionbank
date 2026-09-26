@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
 import { InlineMath, BlockMath } from "react-katex";
 import "katex/dist/katex.min.css";
@@ -10,6 +10,7 @@ import { Checkbox } from "./ui/checkbox";
 import { Input } from "./ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { Textarea } from "./ui/textarea";
+import { normalizeEquationLatex } from "./MathText";
 
 export interface EditableBlock {
   tempId: string;
@@ -56,6 +57,18 @@ export function emptyBlock(type: BlockType): EditableBlock {
 
 export function blocksToPayload(blocks: EditableBlock[]) {
   return blocks.map((b) => ({ block_type: b.block_type, content: b.content }));
+}
+
+function AutoResizeTextarea({ value, onChange, ...props }: React.ComponentProps<typeof Textarea>) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    element.style.height = "auto";
+    element.style.height = `${element.scrollHeight}px`;
+  }, [value]);
+
+  return <Textarea {...props} ref={ref} value={value} onChange={onChange} />;
 }
 
 interface BlockEditorProps {
@@ -193,10 +206,10 @@ function BlockFields({ block, onChange }: { block: EditableBlock; onChange: (con
   switch (block.block_type) {
     case "text":
       return (
-        <Textarea
+        <AutoResizeTextarea
           value={c.text ?? ""}
           onChange={(e) => set({ text: e.target.value })}
-          rows={2}
+          rows={3}
           placeholder="Question text…"
         />
       );
@@ -217,7 +230,7 @@ function BlockFields({ block, onChange }: { block: EditableBlock; onChange: (con
             value={c.latex ?? ""}
             onChange={(e) => set({ latex: e.target.value })}
             className="font-mono"
-            placeholder="x^2 - 5x + 6 = 0"
+            placeholder="$x^2 - 5x + 6 = 0$ or 5 × 10^3"
           />
           <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <Checkbox checked={c.display ?? true} onCheckedChange={(v) => set({ display: v === true })} />
@@ -225,7 +238,7 @@ function BlockFields({ block, onChange }: { block: EditableBlock; onChange: (con
           </label>
           {c.latex && (
             <div className="rounded-md bg-muted/60 px-3 py-2 text-sm">
-              {c.display ? <BlockMath math={c.latex} errorColor="#b3261e" /> : <InlineMath math={c.latex} errorColor="#b3261e" />}
+              {c.display ? <BlockMath math={normalizeEquationLatex(String(c.latex ?? ""))} errorColor="#b3261e" /> : <InlineMath math={normalizeEquationLatex(String(c.latex ?? ""))} errorColor="#b3261e" />}
             </div>
           )}
         </div>

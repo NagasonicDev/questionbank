@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
+import { formatQuestionType } from "../lib/questionTypes";
 import { useActiveCourse } from "../hooks/useActiveCourse";
 import { useCourseConfig } from "../hooks/useCourseConfig";
 import { StructureEditor } from "../components/StructureEditor";
@@ -43,6 +44,15 @@ export function CourseSettings() {
     }
   };
 
+  const handleExportQuestions = async () => {
+    setActionError(null);
+    try {
+      await api.exportQuestions(config.course_id);
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Failed to export questions");
+    }
+  };
+
   return (
     <div>
       <PageHeader
@@ -54,6 +64,10 @@ export function CourseSettings() {
             <Button variant="outline" onClick={handleExport} title="Export this course as a .qb bundle you can import on another device.">
               <Download />
               Export course
+            </Button>
+            <Button variant="outline" onClick={handleExportQuestions} title="Export only the questions and their assets as an editable JSON and images bundle.">
+              <Download />
+              Export questions
             </Button>
             <Button
               variant="outline"
@@ -159,7 +173,7 @@ function QuestionManager({ config }: { config: NonNullable<ReturnType<typeof use
               {(item.type_key || item.difficulty != null || item.marks != null) && (
                 <Meta>
                   {[
-                    item.type_key.replace(/_/g, " "),
+                    formatQuestionType(item.type_key),
                     item.difficulty != null && `Difficulty ${item.difficulty}`,
                     item.marks != null && `${item.marks} marks`,
                   ].filter(Boolean).join(" · ")}

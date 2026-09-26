@@ -102,20 +102,31 @@ export interface BuildOptions {
  */
 export async function buildTestOutputs(options: BuildOptions): Promise<Record<TestFile, Blob>> {
   const { title, courseName, format, sections, achievedMarks } = options;
-  const resolvedImages = await collectImages(sections);
+  const timed = async <T>(phase: string, run: () => Promise<T>): Promise<T> => {
+    const name = `test-generation:${options.testId}:${phase}`;
+    const start = performance.now();
+    performance.mark(`${name}:start`);
+    try {
+      return await run();
+    } finally {
+      performance.mark(`${name}:end`);
+      performance.measure(name, { start, end: `${name}:end` });
+    }
+  };
+  const resolvedImages = await timed("render", () => collectImages(sections));
   const docOptions = { title, courseName, achievedMarks, sections, resolvedImages };
   options.onProgress?.({ phase: "paper", questionCount: options.questions.length });
   const test =
-    format === "pdf" ? await buildPdfPaper(docOptions) : await buildDocxPaper(docOptions);
+    await timed("export-paper", () => format === "pdf" ? buildPdfPaper(docOptions) : buildDocxPaper(docOptions));
   options.onProgress?.({ phase: "solutions", questionCount: options.questions.length });
   const solutions =
-    format === "pdf"
-      ? await buildPdfSolutions(docOptions)
-      : await buildDocxSolutions(docOptions);
+    await timed("export-solutions", () => format === "pdf"
+      ? buildPdfSolutions(docOptions)
+      : buildDocxSolutions(docOptions));
   let preview = test;
   if (format !== "pdf") {
     options.onProgress?.({ phase: "preview", questionCount: options.questions.length });
-    preview = await buildPdfPaper(docOptions);
+    preview = await timed("export-preview", () => buildPdfPaper(docOptions));
   }
   return { test, solutions, preview };
 }

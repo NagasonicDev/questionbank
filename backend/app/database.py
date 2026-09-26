@@ -17,7 +17,7 @@ ASSETS_DIR = DATA_DIR / "assets"
 DB_DIR.mkdir(parents=True, exist_ok=True)
 ASSETS_DIR.mkdir(parents=True, exist_ok=True)
 
-DB_PATH = DB_DIR / "questionbank.sqlite"
+DB_PATH = DB_DIR / "quaestio.sqlite"
 DATABASE_URL = f"sqlite:///{DB_PATH}"
 
 UPLOADS_DIR = ASSETS_DIR / "_uploads"

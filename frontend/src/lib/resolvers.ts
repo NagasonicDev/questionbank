@@ -98,6 +98,7 @@ export async function resolveEquations(
   blocks: ContentBlock[]
 ): Promise<Map<string, ResolvedImage>> {
   const map = new Map<string, ResolvedImage>();
+  const jobs: Array<() => Promise<void>> = [];
   for (const b of blocks) {
     if (b.block_type !== "equation") {
       const texts: string[] = [];
@@ -117,14 +118,17 @@ export async function resolveEquations(
       }
       const expressions = texts.flatMap(inlineMathExpressions);
       for (let i = 0; i < expressions.length; i++) {
-        const png = await renderLatexPng(expressions[i], false);
-        if (!png) continue;
-        const heightPx = 22;
-        map.set(inlineMathImageId(b.block_id, i), {
-          data: new Uint8Array(png.data),
-          mime: "image/png",
-          widthPx: Math.max(1, Math.round((png.width / png.height) * heightPx)),
-          heightPx,
+        const expression = expressions[i];
+        jobs.push(async () => {
+          const png = await renderLatexPng(expression, false);
+          if (!png) return;
+          const heightPx = 22;
+          map.set(inlineMathImageId(b.block_id, i), {
+            data: new Uint8Array(png.data),
+            mime: "image/png",
+            widthPx: Math.max(1, Math.round((png.width / png.height) * heightPx)),
+            heightPx,
+          });
         });
       }
       continue;
@@ -132,16 +136,25 @@ export async function resolveEquations(
     const latex = contentOf(b, "latex");
     if (typeof latex !== "string" || !latex) continue;
     const display = contentOf(b, "display", true) !== false;
-    const png = await renderLatexPng(latex, display);
-    if (!png) continue;
-    const heightPx = 27;
-    const widthPx = Math.round((png.width / png.height) * heightPx);
-    map.set(b.block_id, {
-      data: new Uint8Array(png.data),
-      mime: "image/png",
-      widthPx,
-      heightPx,
+    jobs.push(async () => {
+      const png = await renderLatexPng(latex, display);
+      if (!png) return;
+      const heightPx = 27;
+      const widthPx = Math.round((png.width / png.height) * heightPx);
+      map.set(b.block_id, {
+        data: new Uint8Array(png.data),
+        mime: "image/png",
+        widthPx,
+        heightPx,
+      });
     });
   }
+
+  // Keep DOM rasterization concurrent enough to reduce per-equation latency
+  // without creating an unbounded number of canvases and cloned DOM trees.
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(4, jobs.length) }, async () => {
+    while (next < jobs.length) await jobs[next++]();
+  }));
   return map;
 }

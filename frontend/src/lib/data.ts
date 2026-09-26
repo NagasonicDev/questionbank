@@ -1,4 +1,4 @@
-import { all, getFirst, run, runMany, transaction } from "./db/sqlite";
+import { all, flush, getFirst, run, runMany, transaction } from "./db/sqlite";
 import { newId, nowUtc } from "./id";
 import { deleteAssetBlob, finalizeQuestionAssets } from "./assets";
 import { buildTestOutputs, deleteTestOutputs, ensureTestFileUrl, storeTestFiles } from "./tests";
@@ -406,8 +406,12 @@ function buildFilters(opts: FilterOptions): { where: string[]; params: any[] } {
   }
   if (opts.typeKey !== undefined && opts.typeKey !== null && opts.typeKey !== "") {
     const keys = Array.isArray(opts.typeKey) ? opts.typeKey : [opts.typeKey];
-    where.push(`q.type_key IN (${keys.map(() => "?").join(", ")})`);
-    params.push(...keys);
+    // An empty array is the UI's "Any question type" selection. Treat it as
+    // no type constraint instead of emitting `IN ()`, which matches no rows.
+    if (keys.length) {
+      where.push(`q.type_key IN (${keys.map(() => "?").join(", ")})`);
+      params.push(...keys);
+    }
   }
   if (opts.typeKeys && opts.typeKeys.length) {
     where.push(`q.type_key IN (${opts.typeKeys.map(() => "?").join(", ")})`);
@@ -1058,6 +1062,9 @@ export async function clearQuestions(): Promise<void> {
   for (const row of roots) await deleteAssetBlobsFor(String(row.question_id));
   await run("DELETE FROM question");
   await run("DELETE FROM source");
+  // Settings reloads immediately after this resolves. Persist synchronously so
+  // the reload cannot restore the pre-clear database from IndexedDB.
+  await flush();
 }
 
 // ---------- listing / counts / random ----------
@@ -1144,6 +1151,34 @@ export async function questionSourceOptions(courseId: string): Promise<{ institu
     byInstitution.set(String(row.institution), years);
   }
   return { institutions: [...byInstitution].sort(([a], [b]) => a.localeCompare(b)).map(([name, years]) => ({ name, years: [...years].sort((a, b) => b - a) })) };
+}
+
+export async function questionSourceCounts(
+  courseId: string,
+  opts: { type?: string[]; difficulties?: number[]; node_ids?: string[]; tag?: string } = {}
+): Promise<Record<string, { total: number; years: Record<string, number> }>> {
+  const filters = buildFilters({
+    courseId, approvedOnly: true, wholeQuestions: true,
+    typeKey: opts.type, difficulties: opts.difficulties, nodeIds: opts.node_ids, tag: opts.tag,
+  });
+  const rows = await all<SqlRow>(
+    `SELECT COALESCE(NULLIF(TRIM(s.institution), ''), TRIM(s.name)) AS institution,
+            s.year, COUNT(*) AS count
+     FROM question q JOIN source s ON s.source_id = q.source_id
+     WHERE ${filters.where.join(" AND ")}
+     GROUP BY institution, s.year ORDER BY institution, s.year`,
+    filters.params
+  );
+  const counts: Record<string, { total: number; years: Record<string, number> }> = {};
+  for (const row of rows) {
+    if (row.institution == null) continue;
+    const name = String(row.institution);
+    const count = Number(row.count);
+    const item = counts[name] ??= { total: 0, years: {} };
+    item.total += count;
+    if (row.year != null) item.years[String(row.year)] = count;
+  }
+  return counts;
 }
 
 export async function renameInstitution(courseId: string, currentName: string, nextName: string): Promise<number> {
@@ -1504,6 +1539,16 @@ export async function importJson(courseId: string, data: any): Promise<ImportRes
   let importedCount = 0;
   let errorCount = 0;
 
+  const hasValue = (value: any): boolean => {
+    if (typeof value === "string") return value.trim().length > 0;
+    if (typeof value === "number") return Number.isFinite(value) && value > 0;
+    if (Array.isArray(value)) return value.some(hasValue);
+    if (value && typeof value === "object") return Object.values(value).some(hasValue);
+    return false;
+  };
+  const hasContent = (blocks: any): boolean =>
+    Array.isArray(blocks) && blocks.some((block) => hasValue(block?.content));
+
   for (let i = 0; i < questions.length; i++) {
     const q = questions[i];
     const errors: string[] = [];
@@ -1570,13 +1615,30 @@ export async function importJson(courseId: string, data: any): Promise<ImportRes
     }
     const hasBody = Array.isArray(q.body) && q.body.length > 0;
     if (!hasBody) errors.push("Question has no body content blocks");
-    const hasMc = Array.isArray(q.marking_criteria) && q.marking_criteria.length > 0;
-    const hasAnswer = Array.isArray(q.answer) && q.answer.length > 0;
-    const hasSolution = Array.isArray(q.solution) && q.solution.length > 0;
-    if (!hasMc && !hasAnswer && !hasSolution) {
-      warnings.push("No marking guide, answer, or solution provided for this question");
-    } else if (!hasMc) {
-      warnings.push("No marking guide (marking_criteria) provided — only answer/solution");
+    const parts: any[] = Array.isArray(q.parts) ? q.parts : [];
+    if (parts.length > 0) {
+      const missingAnswers: string[] = [];
+      const missingGuides: string[] = [];
+      parts.forEach((part, partIndex) => {
+        const label = part.part_label ? `part ${part.part_label}` : `part ${partIndex + 1}`;
+        if (!hasContent(part.answer) && !hasContent(part.solution)) missingAnswers.push(label);
+        if (!hasContent(part.marking_criteria)) missingGuides.push(label);
+      });
+      if (missingAnswers.length) {
+        warnings.push(`No answer or solution provided for ${missingAnswers.join(", ")}`);
+      }
+      if (missingGuides.length) {
+        warnings.push(`No marking guide (marking_criteria) provided for ${missingGuides.join(", ")}`);
+      }
+    } else {
+      const hasMc = hasContent(q.marking_criteria);
+      const hasAnswer = hasContent(q.answer);
+      const hasSolution = hasContent(q.solution);
+      if (!hasMc && !hasAnswer && !hasSolution) {
+        warnings.push("No marking guide, answer, or solution provided for this question");
+      } else if (!hasMc) {
+        warnings.push("No marking guide (marking_criteria) provided — only answer/solution");
+      }
     }
     const confidence = q.classification_confidence ?? "medium";
     await run(
@@ -1627,7 +1689,7 @@ export async function importJson(courseId: string, data: any): Promise<ImportRes
     });
     await runMany(statements);
     await finalizeAssetsForStatements(parentId, statements);
-    for (const part of q.parts ?? []) {
+    for (const part of parts) {
       const partId = newId("q");
       await run(
         `INSERT INTO question (question_id, course_id, type_key, marks, parent_question_id, part_label, review_status, created_at, updated_at)
@@ -1709,6 +1771,24 @@ async function matchingQuestionIds(
   );
 }
 
+async function matchingQuestionMarks(
+  courseId: string,
+  opts: Parameters<typeof matchingQuestionIds>[1]
+): Promise<SqlRow[]> {
+  const f = buildFilters({
+    courseId, approvedOnly: true, wholeQuestions: true,
+    typeKey: opts.type_key, typeKeys: opts.type_keys,
+    difficulties: opts.difficulties, difficultyMin: opts.difficulty_min,
+    difficultyMax: opts.difficulty_max, marksMin: opts.marks_min,
+    marksMax: opts.marks_max, nodeIds: opts.node_ids,
+    institutionYears: opts.institutionYears,
+  });
+  return all<SqlRow>(
+    `SELECT q.question_id, q.marks FROM question q WHERE ${f.where.join(" AND ")} AND q.marks IS NOT NULL`,
+    f.params
+  );
+}
+
 export async function estimateTestSections(
   courseId: string,
   sections: TestSectionInput[]
@@ -1748,20 +1828,32 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+function recordGenerationTiming(name: string, start: number): void {
+  const endMark = `${name}:end`;
+  performance.mark(endMark);
+  performance.measure(name, { start, end: endMark });
+}
+
 async function selectForMarks(
   courseId: string,
   target: number,
   opts: Parameters<typeof matchingQuestionIds>[1],
   selectionDeadline = Infinity,
-  onHydrating?: () => void
+  onHydrating?: () => void,
+  cachedCandidates?: Promise<SqlRow[]>,
+  timingPrefix?: string
 ): Promise<{ questions: Question[]; selectionLimited: boolean }> {
-  const f = buildFilters({ courseId, approvedOnly: true, wholeQuestions: true, typeKeys: opts.type_keys, typeKey: opts.type_key, difficulties: opts.difficulties, difficultyMin: opts.difficulty_min, difficultyMax: opts.difficulty_max, marksMin: opts.marks_min, marksMax: opts.marks_max, nodeIds: opts.node_ids });
-  const rows = await all<SqlRow>(`SELECT q.question_id, q.marks FROM question q WHERE ${f.where.join(" AND ")} AND q.marks IS NOT NULL`, f.params);
+  const queryStart = performance.now();
+  if (timingPrefix) performance.mark(`${timingPrefix}:candidate-query:start`);
+  const rows = [...await (cachedCandidates ?? matchingQuestionMarks(courseId, opts))];
+  if (timingPrefix) recordGenerationTiming(`${timingPrefix}:candidate-query`, queryStart);
   // Shuffle only question IDs and marks in memory; full question data is loaded after selection.
   for (let i = rows.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [rows[i], rows[j]] = [rows[j], rows[i]];
   }
+  const selectionStart = performance.now();
+  if (timingPrefix) performance.mark(`${timingPrefix}:selection:start`);
   const targetUnits = Math.max(1, Math.round(target * 100));
   const groups = new Map<number, number[]>();
   rows.forEach((row, index) => {
@@ -1834,9 +1926,14 @@ async function selectForMarks(
   const pickedRows = bestPath.flatMap((bundleIndex) =>
     bundles[bundleIndex].questionIndexes.map((index) => rows[index])
   );
+  if (timingPrefix) recordGenerationTiming(`${timingPrefix}:selection`, selectionStart);
   onHydrating?.();
+  const hydrateStart = performance.now();
+  if (timingPrefix) performance.mark(`${timingPrefix}:hydration:start`);
+  const questions = await hydrateQuestions(pickedRows.map((row) => String(row.question_id)));
+  if (timingPrefix) recordGenerationTiming(`${timingPrefix}:hydration`, hydrateStart);
   return {
-    questions: await hydrateQuestions(pickedRows.map((row) => String(row.question_id))),
+    questions,
     selectionLimited,
   };
 }
@@ -1847,7 +1944,9 @@ async function sectionQuestions(
   sec: TestSectionInput,
   config: CourseFullConfig,
   selectionDeadline: number,
-  onHydrating: () => void
+  onHydrating: () => void,
+  candidateCache: Map<string, Promise<SqlRow[]>>,
+  timingPrefix: string
 ): Promise<{ questions: Question[]; marks: number; selectionLimited: boolean }> {
   const hasMarks = sec.marks !== undefined && sec.marks !== null;
   if (!hasMarks) throw new Error(`Section ${index}: set a marks target.`);
@@ -1858,8 +1957,23 @@ async function sectionQuestions(
     node_ids: sec.node_ids,
     institutionYears: sec.source_filters,
   };
+  const signature = JSON.stringify({
+    courseId,
+    type_key: opts.type_key ?? null,
+    type_keys: [...(opts.type_keys ?? [])].sort(),
+    difficulties: [...(opts.difficulties ?? [])].map(Number).sort((a, b) => a - b),
+    node_ids: [...(opts.node_ids ?? [])].sort(),
+    institutionYears: [...(opts.institutionYears ?? [])]
+      .map(({ institution, years }) => ({ institution, years: [...years].sort((a, b) => a - b) }))
+      .sort((a, b) => a.institution.localeCompare(b.institution)),
+  });
+  let cachedCandidates = candidateCache.get(signature);
+  if (!cachedCandidates) {
+    cachedCandidates = matchingQuestionMarks(courseId, opts);
+    candidateCache.set(signature, cachedCandidates);
+  }
   const display = sec.name || `Section ${index + 1}`;
-  const { questions, selectionLimited } = await selectForMarks(courseId, sec.marks!, opts, selectionDeadline, onHydrating);
+  const { questions, selectionLimited } = await selectForMarks(courseId, sec.marks!, opts, selectionDeadline, onHydrating, cachedCandidates, timingPrefix);
   const secMarks = round2(questions.reduce((sum, q) => sum + (q.marks ?? 0), 0));
   if (!questions.length) {
     throw new Error(
@@ -1897,12 +2011,22 @@ export async function generateTest(
   const allQuestions: Question[] = [];
   const sectionQuestionsByWork: Array<{ label: string | null; questions: Question[] }> = [];
   let targetMarks = 0;
+  const testId = newId("test");
+  const timingPrefix = `test-generation:${testId}`;
+  const generationStart = performance.now();
+  performance.mark(`${timingPrefix}:start`);
+  const selectionStart = performance.now();
+  performance.mark(`${timingPrefix}:selection-and-hydration:start`);
   payload.onProgress?.({ phase: "selecting" });
   const selectionDeadline = performance.now() + (payload.selectionTimeoutMs ?? Infinity);
+  const candidateCache = new Map<string, Promise<SqlRow[]>>();
   const selected = await Promise.all(work.map((sec, i) => sectionQuestions(
     courseId, i, sec, config, selectionDeadline,
-    () => payload.onProgress?.({ phase: "hydrating" })
+    () => payload.onProgress?.({ phase: "hydrating" }),
+    candidateCache,
+    `${timingPrefix}:section-${i + 1}`
   )));
+  recordGenerationTiming(`${timingPrefix}:selection-and-hydration`, selectionStart);
   const questionCount = selected.reduce((sum, item) => sum + item.questions.length, 0);
   for (let i = 0; i < work.length; i++) {
     const sec = work[i];
@@ -1928,8 +2052,8 @@ export async function generateTest(
   const title = payload.title?.trim() || `${config.name} — Practice Test`;
   const format = payload.format ?? "docx";
   const achieved = round2(allQuestions.reduce((sum, q) => sum + (q.marks ?? 0), 0));
-  const testId = newId("test");
-
+  const renderStart = performance.now();
+  performance.mark(`${timingPrefix}:render-and-export:start`);
   const files = await buildTestOutputs({
     testId,
     title,
@@ -1941,7 +2065,10 @@ export async function generateTest(
     sections: sectionQuestionsByWork,
     onProgress: payload.onProgress,
   });
+  recordGenerationTiming(`${timingPrefix}:render-and-export`, renderStart);
   payload.onProgress?.({ phase: "saving", questionCount });
+  const savingStart = performance.now();
+  performance.mark(`${timingPrefix}:saving:start`);
   await storeTestFiles(testId, files);
   const testUrl = (await ensureTestFileUrl(testId, "test")) ?? "";
   const solutionsUrl = (await ensureTestFileUrl(testId, "solutions")) ?? "";
@@ -1968,6 +2095,8 @@ export async function generateTest(
       nowUtc(),
     ]
   );
+  recordGenerationTiming(`${timingPrefix}:saving`, savingStart);
+  recordGenerationTiming(`${timingPrefix}:total`, generationStart);
   return {
     test_id: testId,
     title,

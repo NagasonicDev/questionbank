@@ -1,4 +1,4 @@
-# Local Question Bank (client-only)
+# Quaestio (client-only)
 
 A complete question bank that runs **entirely in your browser**. There is no
 server, no database server, and nothing to install beyond Node.js (only needed
@@ -44,6 +44,9 @@ deploys to a static host like GitHub Pages with no backend at all.
 - **Export / Import** — Export any course as a single `.qb` zip (course +
   questions + images); import it back on another browser/machine, either
   replacing the existing copy or adding as a new course.
+- **Question-only export** — Export just a course's questions as a `.qbx` zip
+  containing editable `questions.json` plus the referenced image assets. Course
+  structure and settings are not included.
 - **Dark mode** & a responsive layout served from a single page with hash
   routing (`#/practice`, etc.) so deep links work on any static host.
 
@@ -75,14 +78,14 @@ Only **Node.js 18+** (with npm) is required.
 
 ### One-click launcher
 
-- **macOS:** double-click `Start QuestionBank.command`
-- **Windows:** double-click `Start QuestionBank.bat`
+- **macOS:** double-click `Start Quaestio.command`
+- **Windows:** double-click `Start Quaestio.bat`
 - **Linux:** run `./start.sh` (or double-click it if your file manager runs
   `.sh` scripts)
 
 First run installs the frontend dependencies (one or two minutes, only once).
 Each launch rebuilds the static bundle so code changes are picked up
-automatically, then opens `http://127.0.0.1:8420/questionbank/` in seconds.
+automatically, then opens `http://127.0.0.1:8420/quaestio/` in seconds.
 Leave the terminal window it opens running while you use the app; closing it
 stops the app. The launcher only serves static files (`vite preview`) — there
 is no backend to start.
@@ -95,7 +98,7 @@ restarting the launcher each time.
 ```bash
 cd frontend
 npm install
-npm run dev      # serves at http://localhost:5173/questionbank/
+npm run dev      # serves at http://localhost:5173/quaestio/
 ```
 
 Any changes save instantly. Build a production bundle with `npm run build`
@@ -104,7 +107,7 @@ Any changes save instantly. Build a production bundle with `npm run build`
 ### On GitHub Pages
 
 Push to the `main` branch — `.github/workflows/deploy.yml` builds `frontend`
-and deploys `dist` to GitHub Pages under the **`/questionbank/`** base path.
+and deploys `dist` to GitHub Pages under the **`/quaestio/`** base path.
 Hash routing means no server-side rewrites are needed. Because the app is
 client-only, the deployed site behaves exactly like the local one, but with
 per-browser data (see above) — the `.qb` format is the bridge between them.
@@ -112,15 +115,15 @@ per-browser data (see above) — the `.qb` format is the bridge between them.
 ## Project layout
 
 ```
-Start QuestionBank.command   - double-click launcher (macOS)
-Start QuestionBank.bat        - double-click launcher (Windows)
+Start Quaestio.command        - double-click launcher (macOS)
+Start Quaestio.bat            - double-click launcher (Windows)
 start.sh                       - launcher (Linux / manual macOS)
 backend/                       - retired: the original FastAPI backend. The
                                  app no longer uses it and is fully
                                  client-side now; kept only as a reference.
 frontend/
   public/
-    sql-wasm.wasm              - SQLite wasm build (served at /questionbank/)
+    sql-wasm.wasm              - SQLite wasm build (served at /quaestio/)
     favicon.svg, icons.svg
   src/
     main.tsx, App.tsx          - app shell, theme, HashRouter, routes
@@ -156,7 +159,7 @@ frontend/
       docx.ts, pdf.ts          - DOCX (docx lib) and PDF (pdf-lib) builders
       tests.ts                 - generated-test archives in IndexedDB
       assets.ts                - staged image upload -> question assets
-  package.json, vite.config.ts  - base '/questionbank/', assets in app-assets/
+  package.json, vite.config.ts  - base '/quaestio/', assets in app-assets/
 ```
 
 ## Verified working

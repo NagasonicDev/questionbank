@@ -6,6 +6,67 @@ import { useCourseConfig } from "../hooks/useCourseConfig";
 import { PageHeader, Panel, PanelHead, Meta } from "../components/system";
 import { Button } from "../components/ui/button";
 import { Upload, FileJson } from "lucide-react";
+import JSZip from "jszip";
+import * as idb from "../lib/db/indexeddb";
+import { newId } from "../lib/id";
+import { ensureAssetUrl } from "../lib/assets";
+
+async function parseQuestionBundle(file: File) {
+  let archive: JSZip;
+  try {
+    archive = await JSZip.loadAsync(file);
+  } catch {
+    throw new Error("This is not a valid .qbx question bundle.");
+  }
+  const manifest = archive.file("questions.json");
+  if (!manifest) throw new Error("This .qbx bundle has no questions.json file.");
+  const payload = JSON.parse(await manifest.async("string"));
+  if (payload.export_schema_version !== 1 || !Array.isArray(payload.questions)) {
+    throw new Error("Unsupported or invalid .qbx question bundle.");
+  }
+
+  const blobs = new Map<string, Blob>();
+  const folder = archive.folder("assets");
+  if (folder) {
+    for (const path in folder.files) {
+      const entry = folder.files[path];
+      if (entry.dir) continue;
+      const filename = path.split("/").pop() ?? "";
+      const assetId = filename.replace(/\.[^.]*$/, "");
+      if (assetId) blobs.set(assetId, await entry.async("blob"));
+    }
+  }
+
+  const assetMap = new Map<string, string>();
+  const rewriteQuestion = (question: any) => {
+    for (const asset of question.assets ?? []) {
+      const oldId = String(asset.asset_id);
+      if (blobs.has(oldId) && !assetMap.has(oldId)) assetMap.set(oldId, newId("asset"));
+      const mapped = assetMap.get(oldId);
+      if (mapped) {
+        asset.asset_id = mapped;
+        asset.file_path = mapped;
+      }
+    }
+    const rewriteBlocks = (blocks: any[]) => {
+      for (const block of blocks ?? []) {
+        const oldId = block.content?.asset_path;
+        if (typeof oldId === "string" && assetMap.has(oldId)) block.content.asset_path = assetMap.get(oldId);
+      }
+    };
+    for (const slot of ["body", "answer", "solution", "marking_criteria"]) rewriteBlocks(question[slot]);
+    for (const option of question.mcq_options ?? []) rewriteBlocks(option.content);
+    for (const part of question.parts ?? []) rewriteQuestion(part);
+  };
+  for (const question of payload.questions) rewriteQuestion(question);
+
+  for (const [oldId, newAssetId] of assetMap) {
+    const blob = blobs.get(oldId);
+    if (blob) await idb.putAsset(newAssetId, blob);
+  }
+  for (const id of assetMap.values()) await ensureAssetUrl(id);
+  return { ...payload, questions: payload.questions };
+}
 
 export function Import() {
   const { courseId } = useActiveCourse();
@@ -24,8 +85,9 @@ export function Import() {
     setResult(null);
     setImporting(true);
     try {
-      const text = await file.text();
-      const parsed = JSON.parse(text);
+      const parsed = file.name.toLowerCase().endsWith(".qbx")
+        ? await parseQuestionBundle(file)
+        : JSON.parse(await file.text());
       const res = await api.importJson(courseId, parsed);
       setResult(res);
       if (res.imported_count > 0) {
@@ -50,14 +112,14 @@ export function Import() {
       <PageHeader
         eyebrow="Bulk intake"
         title="Import questions"
-        description="Bring validated question sets into this course from an AI-generated JSON file."
+        description="Import questions from an AI-generated JSON file or a question-only .qbx bundle."
       />
 
       <Panel>
-        <PanelHead title="Two-step workflow" note={`Target course: ${config.name}`} />
+        <PanelHead title="Question import" note={`Target course: ${config.name}`} />
         <ol className="grid gap-0 p-5 sm:grid-cols-2">
           <li className="border-b border-border pb-4 sm:border-b-0 sm:border-r sm:pb-0 sm:pr-5">
-            <Meta>Step 01</Meta>
+            <Meta>JSON workflow · Step 01</Meta>
             <h3 className="mt-2 font-display text-lg font-semibold">Prepare with the course skill</h3>
             <p className="mt-2 text-sm text-muted-foreground">
               Download the skill file in Course Settings, then give it and your source document to an AI assistant to
@@ -65,11 +127,11 @@ export function Import() {
             </p>
           </li>
           <li className="pt-4 sm:pl-5 sm:pt-0">
-            <Meta>Step 02</Meta>
+            <Meta>JSON workflow · Step 02</Meta>
             <h3 className="mt-2 font-display text-lg font-semibold">Upload the JSON output</h3>
             <p className="mt-2 text-sm text-muted-foreground">
-              Every question is validated independently; rejections are reported inline so good questions are never
-              blocked.
+              JSON questions are validated independently. A .qbx bundle imports its editable question data and
+              packaged images into this course.
             </p>
           </li>
         </ol>
@@ -79,7 +141,7 @@ export function Import() {
         <label className="grid min-h-48 cursor-pointer place-items-center rounded-lg border border-dashed border-border bg-surface/40 p-6 text-center">
           <input
             type="file"
-            accept=".json,application/json"
+            accept=".json,.qbx,application/json,application/zip"
             className="sr-only"
             disabled={importing}
             onChange={(e) => handleFile(e.target.files?.[0] ?? null)}
@@ -94,7 +156,7 @@ export function Import() {
               <h2 className="font-display text-xl font-semibold">Choose a JSON file</h2>
             )}
             <p className="mt-1 text-sm text-muted-foreground">
-              {fileName ? "Click to choose a different file." : "The file produced by Step 01."}
+              {fileName ? "Click to choose a different file." : "Choose the JSON from Step 01 or a .qbx question bundle."}
             </p>
             <Button className="mt-4" asChild>
               <span>

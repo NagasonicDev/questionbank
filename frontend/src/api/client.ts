@@ -111,6 +111,9 @@ export const api = {
   exportCourse(courseId: string): Promise<void> {
     return import("../lib/exchange").then((m) => m.exportCourse(courseId));
   },
+  exportQuestions(courseId: string): Promise<void> {
+    return import("../lib/exchange").then((m) => m.exportQuestions(courseId));
+  },
 
   importCourseFile(file: File): Promise<{ course_id: string; course_name: string }> {
     return import("../lib/exchange").then((m) => m.importCourseFile(file));
@@ -131,6 +134,10 @@ export const api = {
 
   questionSourceOptions(courseId: string): Promise<{ institutions: Array<{ name: string; years: number[] }> }> {
     return data.questionSourceOptions(courseId);
+  },
+
+  questionSourceCounts(courseId: string, filters: { type?: string[]; difficulties?: number[]; node_ids?: string[]; tag?: string } = {}): Promise<Record<string, { total: number; years: Record<string, number> }>> {
+    return data.questionSourceCounts(courseId, filters);
   },
 
   renameInstitution(courseId: string, currentName: string, nextName: string): Promise<number> {

@@ -12,6 +12,7 @@ import { downloadTestFile, ensureTestFileUrl } from "../lib/tests";
 import { Input } from "../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { effectiveNodeFilterIds } from "../lib/nodeFilters";
+import type { QuestionCountsResponse } from "../api/types";
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
@@ -99,6 +100,13 @@ export function TestGenerator() {
           queryFn: () => api.questionCounts(courseId as string, {
             node_ids: nodeIds,
             type: types.length ? types : undefined,
+          }),
+          enabled: !!courseId,
+        },
+        {
+          queryKey: ["test-source-facet-counts", courseId, nodeIds, types, difficulties],
+          queryFn: () => api.questionSourceCounts(courseId as string, {
+            node_ids: nodeIds, type: types, difficulties,
           }),
           enabled: !!courseId,
         },
@@ -347,11 +355,11 @@ export function TestGenerator() {
                       nodes={config?.nodes ?? []} counts={flatCounts} selectedNodes={sec.nodeIds}
                       onSelectedNodesChange={(nodeIds) => updateSection(sec.id, { nodeIds })}
                       onReset={() => updateSection(sec.id, { nodeIds: new Set(), typeKeys: [], difficulties: [], institutionYears: {} })}
-                      questionTypes={config?.question_types ?? []} typeCounts={sectionFacetQueries[index * 2]?.data?.by_type}
+                      questionTypes={config?.question_types ?? []} typeCounts={(sectionFacetQueries[index * 3]?.data as QuestionCountsResponse | undefined)?.by_type}
                       typeKeys={sec.typeKeys} onTypeKeysChange={(typeKeys) => updateSection(sec.id, { typeKeys })}
-                      difficultyLevels={config?.difficulty_levels ?? []} difficultyCounts={sectionFacetQueries[index * 2 + 1]?.data?.by_difficulty}
+                      difficultyLevels={config?.difficulty_levels ?? []} difficultyCounts={(sectionFacetQueries[index * 3 + 1]?.data as QuestionCountsResponse | undefined)?.by_difficulty}
                       difficulties={sec.difficulties} onDifficultiesChange={(difficulties) => updateSection(sec.id, { difficulties })}
-                      institutions={sourceOptions?.institutions} institutionYears={sec.institutionYears} onInstitutionYearsChange={(institutionYears) => updateSection(sec.id, { institutionYears })}
+                      institutions={sourceOptions?.institutions} institutionCounts={sectionFacetQueries[index * 3 + 2]?.data as Record<string, { total: number; years: Record<string, number> }> | undefined} institutionYears={sec.institutionYears} onInstitutionYearsChange={(institutionYears) => updateSection(sec.id, { institutionYears })}
                     />
                     <span className="ml-2 text-xs text-muted-foreground">{sec.nodeIds.size || "All"} topics · {sec.typeKeys.length || "All"} types · {sec.difficulties.length || "All"} difficulties</span>
                     <p className="mt-2 text-sm font-medium" aria-live="polite">

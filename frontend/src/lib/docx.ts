@@ -3,6 +3,7 @@ import {
   BorderStyle,
   ShadingType,
   Document,
+  Footer,
   ImageRun,
   LevelFormat,
   Packer,
@@ -205,6 +206,7 @@ function renderBlock(
                 italics: true,
               }),
             ],
+            spacing: { after: inches(0.18) },
           })
         );
       } else {
@@ -216,6 +218,7 @@ function renderBlock(
           new Paragraph({
             children: [imageRun(img)],
             alignment: AlignmentType.CENTER,
+            spacing: caption ? undefined : { after: inches(0.18) },
           })
         );
         if (caption) {
@@ -223,6 +226,7 @@ function renderBlock(
             new Paragraph({
               children: [runProps({ text: caption, italics: true, sizePt: 9, color: GRAY })],
               alignment: AlignmentType.CENTER,
+              spacing: { after: inches(0.18) },
             })
           );
         }
@@ -638,6 +642,14 @@ function pack(children: Array<Paragraph | Table>): Promise<Blob> {
     },
     sections: [
       {
+        footers: {
+          default: new Footer({
+            children: [new Paragraph({
+              children: [runProps({ text: "Made with Quaestio", sizePt: EXAM.font.smallPt, color: GRAY })],
+              alignment: AlignmentType.CENTER,
+            })],
+          }),
+        },
         properties: {
           page: {
             size: { width: inches(PAGE_W_IN), height: inches(PAGE_H_IN) },
@@ -706,6 +718,14 @@ export async function buildDocxPaper(opts: DocOptions): Promise<Blob> {
         }
       }
     }
+    const isFinalSection = planIdx === plan.sections.length;
+    children.push(
+      new Paragraph({
+        children: [runProps({ text: isFinalSection ? "End of Exam" : `End of ${secPlan.title}`, bold: true })],
+        alignment: AlignmentType.CENTER,
+        spacing: { before: 8 * 20, after: 8 * 20 },
+      })
+    );
   }
   return pack(children);
 }
@@ -721,6 +741,10 @@ export async function buildDocxSolutions(opts: DocOptions): Promise<Blob> {
     }),
     new Paragraph({
       children: [runProps({ text: `${opts.courseName}  ·  ${dateStr}`, sizePt: 10, color: GRAY })],
+      alignment: AlignmentType.CENTER,
+    }),
+    new Paragraph({
+      children: [runProps({ text: "Made with Quaestio", sizePt: EXAM.font.smallPt, color: GRAY })],
       alignment: AlignmentType.CENTER,
     }),
     new Paragraph({ children: [runProps({ text: "" })] })

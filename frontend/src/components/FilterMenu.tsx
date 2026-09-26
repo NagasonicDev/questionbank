@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { Check, FolderTree, Gauge, Settings2, Shapes, SlidersHorizontal, X, School } from "lucide-react";
+import { Check, FolderTree, Gauge, Settings2, Shapes, SlidersHorizontal, X, School, Tags } from "lucide-react";
 import { cn } from "../lib/utils";
+import { formatQuestionType } from "../lib/questionTypes";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Switch } from "./ui/switch";
@@ -33,9 +34,13 @@ interface FilterMenuProps {
   institutions?: Array<{ name: string; years: number[] }>;
   institutionYears?: Record<string, number[]>;
   onInstitutionYearsChange?: (values: Record<string, number[]>) => void;
+  institutionCounts?: Record<string, { total: number; years: Record<string, number> }>;
+  tags?: string[];
+  selectedTag?: string;
+  onSelectedTagChange?: (tag: string) => void;
 }
 
-type Tab = "structure" | "difficulty" | "type" | "institution" | "options";
+type Tab = "structure" | "difficulty" | "type" | "institution" | "tags" | "options";
 
 function collectChildIds(nodes: CourseNode[], acc: string[]) {
   for (const n of nodes) {
@@ -122,6 +127,8 @@ export function FilterMenu({
   hint,
   inline = false,
   institutions = [], institutionYears = {}, onInstitutionYearsChange,
+  institutionCounts,
+  tags = [], selectedTag = "", onSelectedTagChange,
 }: FilterMenuProps) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<Tab>("structure");
@@ -131,9 +138,10 @@ export function FilterMenu({
     if (typeKeys.length > 0) n += 1;
     if (difficulties.length > 0) n += 1;
     if (Object.keys(institutionYears).length > 0) n += 1;
+    if (selectedTag) n += 1;
     if (avoidRecent && avoidRecentDays != null) n += 1;
     return n;
-  }, [selectedNodes, typeKeys, difficulties, institutionYears, avoidRecent, avoidRecentDays]);
+  }, [selectedNodes, typeKeys, difficulties, institutionYears, selectedTag, avoidRecent, avoidRecentDays]);
 
   const tabs = useMemo(() => {
     const list: Array<{ key: Tab; label: string; icon: typeof FolderTree; badge?: number }> = [
@@ -142,11 +150,12 @@ export function FilterMenu({
       { key: "type", label: "Question type", icon: Shapes, badge: typeKeys.length || undefined },
       { key: "institution", label: "Institution & year", icon: School, badge: Object.keys(institutionYears).length || undefined },
     ];
+    if (tags.length > 0) list.push({ key: "tags", label: "Tags", icon: Tags, badge: selectedTag ? 1 : undefined });
     if (avoidRecent) {
       list.push({ key: "options", label: "Practice options", icon: Settings2 });
     }
     return list;
-  }, [selectedNodes, difficulties, typeKeys, institutionYears, avoidRecent]);
+  }, [selectedNodes, difficulties, typeKeys, institutionYears, avoidRecent, tags, selectedTag]);
 
   useEffect(() => {
     if (!open) return;
@@ -194,7 +203,8 @@ export function FilterMenu({
     return institutions.length === 0 ? <p className="text-sm text-muted-foreground">No institution information available.</p> : <div className="space-y-1.5">{institutions.map(({ name, years }) => {
       const enabled = name in institutionYears;
       const chosenYears = institutionYears[name] ?? [];
-      return <div key={name} className="space-y-1.5"><ToggleButton enabled={enabled} onClick={() => toggleInstitution(name)}>{name}</ToggleButton>{enabled && years.length > 0 && <div className="ml-4 space-y-1.5 border-l border-border pl-3"><ToggleButton enabled={chosenYears.length === 0} onClick={() => onInstitutionYearsChange?.({ ...institutionYears, [name]: [] })}>All years</ToggleButton>{years.map((year) => <ToggleButton key={year} enabled={chosenYears.includes(year)} onClick={() => toggleYear(name, year)}>{year}</ToggleButton>)}</div>}</div>;
+      const counts = institutionCounts?.[name];
+      return <div key={name} className="space-y-1.5"><ToggleButton enabled={enabled} onClick={() => toggleInstitution(name)} right={counts?.total ?? 0}>{name}</ToggleButton>{enabled && years.length > 0 && <div className="ml-4 space-y-1.5 border-l border-border pl-3"><ToggleButton enabled={chosenYears.length === 0} onClick={() => onInstitutionYearsChange?.({ ...institutionYears, [name]: [] })} right={counts?.total ?? 0}>All years</ToggleButton>{years.map((year) => <ToggleButton key={year} enabled={chosenYears.includes(year)} onClick={() => toggleYear(name, year)} right={counts?.years[String(year)] ?? 0}>{year}</ToggleButton>)}</div>}</div>;
     })}</div>;
   }
 
@@ -238,7 +248,7 @@ export function FilterMenu({
       <div>
         <p className="label mb-2">Question type</p>
         <div className="space-y-1.5">
-          {questionTypes.map((t) => <ToggleButton key={t} enabled={typeKeys.includes(t)} onClick={() => toggleType(t)} right={typeCounts?.[t]}>{t.replace(/_/g, " ")}</ToggleButton>)}
+          {questionTypes.map((t) => <ToggleButton key={t} enabled={typeKeys.includes(t)} onClick={() => toggleType(t)} right={typeCounts?.[t]}>{formatQuestionType(t)}</ToggleButton>)}
         </div>
       </div>
       {onReset && activeCount > 0 && <div className="md:col-span-4"><Button size="sm" variant="outline" onClick={onReset}>Reset filters</Button></div>}
@@ -396,7 +406,7 @@ export function FilterMenu({
                                 typeCounts?.[t] != null ? typeCounts[t] : undefined
                               }
                             >
-                              {t.replace(/_/g, " ")}
+                              {formatQuestionType(t)}
                             </ToggleButton>
                           ))}
                         </div>
@@ -405,6 +415,17 @@ export function FilterMenu({
                   )}
 
                   {tab === "institution" && <div><p className="label mb-2">Institution & year</p><p className="mb-3 text-xs text-muted-foreground">Choose an institution to include all its tests, then expand it to narrow the selection to specific years.</p>{renderInstitutions()}</div>}
+
+                  {tab === "tags" && (
+                    <div>
+                      <p className="label mb-2">Tags</p>
+                      <p className="mb-3 text-xs text-muted-foreground">Choose a tag to show questions labeled with it.</p>
+                      <div className="space-y-1.5">
+                        <ToggleButton enabled={!selectedTag} onClick={() => onSelectedTagChange?.("")}>All tags</ToggleButton>
+                        {tags.map((tag) => <ToggleButton key={tag} enabled={selectedTag === tag} onClick={() => onSelectedTagChange?.(selectedTag === tag ? "" : tag)}>{tag}</ToggleButton>)}
+                      </div>
+                    </div>
+                  )}
 
                   {tab === "options" && (
                     <div>

@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { Search } from "lucide-react";
 import { api } from "../api/client";
+import { formatQuestionType } from "../lib/questionTypes";
 import { useActiveCourse } from "../hooks/useActiveCourse";
 import { useCourseConfig } from "../hooks/useCourseConfig";
 import { LoadingState, PageHeader, Panel, Meta, Pagination } from "../components/system";
@@ -22,6 +23,7 @@ interface BrowserState {
   selectedNodes: Set<string>;
   typeKeys: string[];
   difficulties: number[];
+  selectedTag: string;
   institutionYears: Record<string, number[]>;
   search: string;
   sort: string;
@@ -29,7 +31,7 @@ interface BrowserState {
 }
 
 function readBrowserState(courseId: string | null): BrowserState {
-  const defaults: BrowserState = { courseId, selectedNodes: new Set(), typeKeys: [], difficulties: [], institutionYears: {}, search: "", sort: "created_desc", page: 1 };
+  const defaults: BrowserState = { courseId, selectedNodes: new Set(), typeKeys: [], difficulties: [], selectedTag: "", institutionYears: {}, search: "", sort: "created_desc", page: 1 };
   if (!courseId) return defaults;
   try {
     const saved = JSON.parse(localStorage.getItem(BROWSE_STATE_KEY) ?? "null");
@@ -40,6 +42,7 @@ function readBrowserState(courseId: string | null): BrowserState {
       selectedNodes: new Set(Array.isArray(value.selectedNodes) ? value.selectedNodes : []),
       typeKeys: Array.isArray(value.typeKeys) ? value.typeKeys : [],
       difficulties: Array.isArray(value.difficulties) ? value.difficulties : [],
+      selectedTag: typeof value.selectedTag === "string" ? value.selectedTag : "",
       institutionYears: value.institutionYears && typeof value.institutionYears === "object" ? value.institutionYears : {},
       search: typeof value.search === "string" ? value.search : "",
       sort: sortOptions.some((option) => option.value === value.sort) ? value.sort : "created_desc",
@@ -56,7 +59,7 @@ function writeBrowserState(state: BrowserState) {
     const saved = JSON.parse(localStorage.getItem(BROWSE_STATE_KEY) ?? "{}") as Record<string, unknown>;
     saved[state.courseId] = {
       selectedNodes: [...state.selectedNodes], typeKeys: state.typeKeys, difficulties: state.difficulties,
-      institutionYears: state.institutionYears, search: state.search, sort: state.sort, page: state.page,
+      selectedTag: state.selectedTag, institutionYears: state.institutionYears, search: state.search, sort: state.sort, page: state.page,
     };
     localStorage.setItem(BROWSE_STATE_KEY, JSON.stringify(saved));
   } catch {
@@ -78,7 +81,7 @@ export function Browser() {
 
   const [storedState, setStoredState] = useState<BrowserState>(() => readBrowserState(courseId));
   const browserState = storedState.courseId === courseId ? storedState : readBrowserState(courseId);
-  const { selectedNodes, typeKeys, difficulties, institutionYears, search, sort, page } = browserState;
+  const { selectedNodes, typeKeys, difficulties, selectedTag, institutionYears, search, sort, page } = browserState;
   function updateState(patch: Partial<Omit<BrowserState, "courseId">>) {
     const next = { ...browserState, ...patch, courseId };
     setStoredState(next);
@@ -91,7 +94,7 @@ export function Browser() {
     }
     if (!courseId) return;
     writeBrowserState(storedState);
-  }, [courseId, storedState.courseId, selectedNodes, typeKeys, difficulties, institutionYears, search, sort, page]);
+  }, [courseId, storedState.courseId, selectedNodes, typeKeys, difficulties, selectedTag, institutionYears, search, sort, page]);
   const { data: sourceOptions } = useQuery({ queryKey: ["question-source-options", courseId], queryFn: () => api.questionSourceOptions(courseId as string), enabled: !!courseId });
 
   const { data: counts } = useQuery({
@@ -107,13 +110,21 @@ export function Browser() {
   const facetCounts = useQuestionFilterCounts(
     courseId, config?.nodes ?? [], selectedNodes, typeKeys, difficulties
   );
+  const sourceFacetQuery = useQuery({
+    queryKey: ["question-source-facet-counts", courseId, effectiveNodeIds, typeKeys, difficulties, selectedTag],
+    queryFn: () => api.questionSourceCounts(courseId as string, {
+      node_ids: effectiveNodeIds, type: typeKeys, difficulties, tag: selectedTag || undefined,
+    }),
+    enabled: !!courseId,
+  });
 
   const { data: results, isLoading } = useQuery({
-    queryKey: ["questions", courseId, effectiveNodeIds, typeKeys, difficulties, institutionYears, search, sort, page],
+    queryKey: ["questions", courseId, effectiveNodeIds, typeKeys, difficulties, selectedTag, institutionYears, search, sort, page],
     queryFn: () => api.listQuestions(courseId as string, {
       node_id: effectiveNodeIds.length ? effectiveNodeIds : undefined,
       type: typeKeys.length ? typeKeys : undefined,
       difficulty: difficulties.length ? difficulties : undefined,
+      tag: selectedTag || undefined,
       source_filters: Object.entries(institutionYears).map(([institution, years]) => ({ institution, years })),
       q: search || undefined,
       sort,
@@ -124,7 +135,7 @@ export function Browser() {
   });
 
   function handleReset() {
-    updateState({ selectedNodes: new Set(), typeKeys: [], difficulties: [], institutionYears: {}, search: "", page: 1 });
+    updateState({ selectedNodes: new Set(), typeKeys: [], difficulties: [], selectedTag: "", institutionYears: {}, search: "", page: 1 });
   }
 
   if (!courseId) {
@@ -155,9 +166,13 @@ export function Browser() {
               updateState({ page: 1, typeKeys: keys });
             }}
             difficultyLevels={config?.difficulty_levels ?? []}
+            tags={config?.tags ?? []}
+            selectedTag={selectedTag}
+            onSelectedTagChange={(tag) => updateState({ page: 1, selectedTag: tag })}
             difficultyCounts={facetCounts.difficultyCounts}
             difficulties={difficulties}
             institutions={sourceOptions?.institutions}
+            institutionCounts={sourceFacetQuery.data}
             institutionYears={institutionYears}
             onInstitutionYearsChange={(values) => updateState({ page: 1, institutionYears: values })}
             onDifficultiesChange={(levels) => {
@@ -216,7 +231,7 @@ export function Browser() {
               className="panel block p-4 transition hover:-translate-y-px hover:bg-surface"
             >
               <div className="mb-2 flex flex-wrap items-center gap-2">
-                <Meta>{item.type_key.replace(/_/g, " ")}</Meta>
+                <Meta>{formatQuestionType(item.type_key)}</Meta>
                 {item.difficulty != null && (
                   <>
                     <span className="text-border">/</span>

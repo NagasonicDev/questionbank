@@ -424,6 +424,32 @@ export async function exportCourse(courseId: string): Promise<void> {
   downloadBlob(zipBlob, `${slugName(config.name)}.qb`);
 }
 
+/** Export the question records and their binary assets without course configuration. */
+export async function exportQuestions(courseId: string): Promise<void> {
+  const config = await data.getCourseFullConfig(courseId);
+  if (!config) throw new Error("Course not found");
+  const questions = await data.getCourseQuestions(courseId);
+  const zip = new JSZip();
+  zip.file("questions.json", JSON.stringify({
+    export_schema_version: 1,
+    course_name: config.name,
+    exported_at: new Date().toISOString(),
+    questions,
+  }, null, 2));
+  zip.file("README.txt", "Editable question export. Edit questions.json; binary files referenced by asset_id are in assets/. Keep asset IDs and filenames unchanged so image blocks continue to resolve. This package contains no course structure or settings.\n");
+  const seen = new Set<string>();
+  const collectIds = (q: Question) => {
+    for (const a of q.assets) if (!seen.has(a.asset_id)) seen.add(a.asset_id);
+    for (const p of q.parts) collectIds(p);
+  };
+  for (const q of questions) collectIds(q);
+  for (const assetId of seen) {
+    const blob = await idb.getAsset(assetId);
+    if (blob) zip.file(`assets/${assetId}.${mimeExtension(blob.type || "")}`, blob);
+  }
+  downloadBlob(await zip.generateAsync({ type: "blob" }), `${slugName(config.name)}-questions.qbx`);
+}
+
 // ---------- course import (.qb) ----------
 
 export interface ParsedBundle {

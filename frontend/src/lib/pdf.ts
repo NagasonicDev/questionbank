@@ -129,9 +129,11 @@ class Writer {
     // Field initializers run before the constructor body, so `page` must be
     // created here — otherwise `this.pdf` is still undefined when addPage runs.
     this.page = this.newPageRef();
+    this.pageHistory.push({ page: this.page.page, number: this.pageNumber });
   }
 
   pageNumber = 1;
+  pageHistory: Array<{ page: ReturnType<PDFDocument["addPage"]>; number: number }> = [];
 
   private newPageRef() {
     const p = this.pdf.addPage(PageSizes.A4);
@@ -152,13 +154,39 @@ class Writer {
       font,
       color: BLACK,
     });
+    const brand = "Made with Quaestio";
+    drawSafeText(this.page.page, brand, {
+      x: MARGIN_L,
+      y: FOOTER_Y,
+      size,
+      font,
+      color: GRAY,
+    });
   }
 
   newPage() {
     this.drawPageFooter();
     this.pageNumber += 1;
     this.page = this.newPageRef();
+    this.pageHistory.push({ page: this.page.page, number: this.pageNumber });
     this.y = TOP;
+  }
+
+  drawQuestionContinuation(questionNumber: number, fromPage: number, toPage: number) {
+    const text = `Question ${questionNumber} Continues on Page ${toPage}`;
+    const size = EXAM.font.smallPt;
+    const font = this.fonts.bold;
+    for (const entry of this.pageHistory) {
+      if (entry.number < fromPage || entry.number >= toPage) continue;
+      const width = font.widthOfTextAtSize(text, size);
+      drawSafeText(entry.page, text, {
+        x: MARGIN_L + (BODY_W + MARKS_COL - width) / 2,
+        y: FOOTER_Y + 12,
+        size,
+        font,
+        color: BLACK,
+      });
+    }
   }
 
   ensure(space: number) {
@@ -406,10 +434,12 @@ async function renderBlock(w: Writer, b: ContentBlock, images: Map<string, Resol
       if (!img) {
         const path = contentOf(b, "asset_path", "");
         w.text(`[missing image: ${typeof path === "string" ? path : ""}]`, { font: w.fonts.italic, size: 10, color: GRAY });
+        w.y -= LINE_H(11);
         return true;
       }
       const embedded = img.mime === "image/jpeg" ? await w.pdf.embedJpg(img.data) : await w.pdf.embedPng(img.data);
       w.fitImage(embedded, { maxW: 4.5 * PT });
+      w.y -= LINE_H(11);
       return true;
     }
     case "table": {
@@ -428,6 +458,9 @@ async function renderBlock(w: Writer, b: ContentBlock, images: Map<string, Resol
         if (cells.length === 0) continue;
         await w.gridRow(cells.slice(0, cols.length), widths, { align: "center", inline });
       }
+      // The next block's baseline must sit below the table's bottom border;
+      // without this, labels (especially part headings) can overlap the last row.
+      w.spacer(12);
       return true;
     }
     case "list": {
@@ -655,6 +688,7 @@ export async function buildPdfPaper(options: PdfOptions): Promise<Blob> {
       const headerY = w.y;
       w.textLine(`Question ${qn}`, { font: w.fonts.bold, size: EXAM.font.bodyPt });
       w.drawMarks(markText, headerY);
+      const questionStartPage = w.pageNumber;
       await renderPaperQuestion(w, q, sharedImages);
       if ((q.type_key ?? "").toLowerCase() !== "multiple_choice" && !(q.parts.length && isWrittenResponseType(q.type_key))) {
         const lineCount = Math.max(0, Math.floor((q.marks ?? 0) * 3 + 2));
@@ -664,8 +698,19 @@ export async function buildPdfPaper(options: PdfOptions): Promise<Blob> {
           w.y -= LINE_H(EXAM.font.bodyPt);
         }
       }
+      if (w.pageNumber > questionStartPage) {
+        w.drawQuestionContinuation(qn, questionStartPage, w.pageNumber);
+      }
       w.spacer(10);
     }
+    const isFinalSection = planIdx === plan.sections.length;
+    w.ensure(LINE_H(EXAM.font.bodyPt) * 2);
+    w.spacer(8);
+    w.text(isFinalSection ? "End of Exam" : `End of ${secPlan.title}`, {
+      font: w.fonts.bold,
+      size: EXAM.font.bodyPt,
+      align: "center",
+    });
   }
   w.drawPageFooter();
   const bytes = await pdf.save();
@@ -679,6 +724,8 @@ export async function buildPdfSolutions(options: PdfOptions): Promise<Blob> {
   w.spacer(48);
   w.text(`Marking guidelines — ${options.title}`, { font: w.fonts.bold, size: EXAM.font.coverTitlePt, align: "center" });
   w.text(options.courseName, { size: EXAM.font.bodyPt, align: "center" });
+  w.spacer(4);
+  w.text("Made with Quaestio", { size: EXAM.font.smallPt, color: GRAY, align: "center" });
   w.spacer(12);
   w.rule();
   w.newPage();
@@ -705,7 +752,9 @@ export async function buildPdfSolutions(options: PdfOptions): Promise<Blob> {
         for (const row of criteria.rows) {
           await w.gridRow([row.criteria, row.marks], [5 * PT, 1 * PT], { fill: HEADER_BG });
         }
-        w.spacer(4);
+        // Leave enough room for the next label's glyphs below the table
+        // border; text baselines sit above their nominal y position.
+        w.spacer(12);
       }
       if (criteria.supplementary.length) {
         const ids = options.resolvedImages ?? new Map<string, ResolvedImage>([

@@ -47,7 +47,9 @@ export function Layout() {
             Quaestio<span className="text-accent-foreground">.</span>
           </Link>
 
-          <CourseSelector />
+          <div className="hidden xl:block">
+            <CourseSelector />
+          </div>
 
           <nav className="ml-auto hidden items-center gap-0.5 xl:flex">
             {NAV.map((item) => (
@@ -87,6 +89,9 @@ export function Layout() {
 
         {mobileOpen && (
           <nav className="grid border-t border-border bg-background p-3 sm:grid-cols-3 xl:hidden">
+            <div className="col-span-full border-b border-border pb-3 xl:hidden">
+              <CourseSelector inMenu />
+            </div>
             {NAV.map((item) => (
               <NavLink
                 key={item.to}

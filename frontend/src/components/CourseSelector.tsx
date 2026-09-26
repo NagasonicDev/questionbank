@@ -7,7 +7,7 @@ import { CreateCourseForm } from "./CreateCourseForm";
 import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
 
-export function CourseSelector() {
+export function CourseSelector({ inMenu = false }: { inMenu?: boolean }) {
   const { courseId, setCourseId } = useActiveCourse();
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -32,6 +32,12 @@ export function CourseSelector() {
     document.addEventListener("mousedown", onClick);
     return () => document.removeEventListener("mousedown", onClick);
   }, []);
+
+  useEffect(() => {
+    if (!importNotice) return;
+    const timeout = window.setTimeout(() => setImportNotice(null), 5000);
+    return () => window.clearTimeout(timeout);
+  }, [importNotice]);
 
   function startCreate() {
     setCreating(true);
@@ -58,7 +64,15 @@ export function CourseSelector() {
   }
 
   return (
-    <div className="relative hidden min-w-0 items-center gap-1.5 border-l border-border pl-4 sm:flex" ref={ref}>
+    <div
+      className={cn(
+        "relative min-w-0 items-center gap-1.5",
+        inMenu
+          ? "flex flex-wrap"
+          : "hidden border-l border-border pl-4 xl:flex"
+      )}
+      ref={ref}
+    >
       <Button
         variant="outline"
         className="max-w-58 justify-between bg-surface/70"
