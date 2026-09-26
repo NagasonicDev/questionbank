@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { Search } from "lucide-react";
@@ -11,8 +11,58 @@ import { Input } from "../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { flattenCounts } from "../components/NodeTree";
 import { MathText } from "../components/MathText";
+import { effectiveNodeFilterIds } from "../lib/nodeFilters";
+import { useQuestionFilterCounts } from "../hooks/useQuestionFilterCounts";
 
 const PAGE_SIZE = 20;
+const BROWSE_STATE_KEY = "qb-browser-state";
+
+interface BrowserState {
+  courseId: string | null;
+  selectedNodes: Set<string>;
+  typeKeys: string[];
+  difficulties: number[];
+  institutionYears: Record<string, number[]>;
+  search: string;
+  sort: string;
+  page: number;
+}
+
+function readBrowserState(courseId: string | null): BrowserState {
+  const defaults: BrowserState = { courseId, selectedNodes: new Set(), typeKeys: [], difficulties: [], institutionYears: {}, search: "", sort: "created_desc", page: 1 };
+  if (!courseId) return defaults;
+  try {
+    const saved = JSON.parse(localStorage.getItem(BROWSE_STATE_KEY) ?? "null");
+    const value = saved?.[courseId];
+    if (!value) return defaults;
+    return {
+      ...defaults,
+      selectedNodes: new Set(Array.isArray(value.selectedNodes) ? value.selectedNodes : []),
+      typeKeys: Array.isArray(value.typeKeys) ? value.typeKeys : [],
+      difficulties: Array.isArray(value.difficulties) ? value.difficulties : [],
+      institutionYears: value.institutionYears && typeof value.institutionYears === "object" ? value.institutionYears : {},
+      search: typeof value.search === "string" ? value.search : "",
+      sort: sortOptions.some((option) => option.value === value.sort) ? value.sort : "created_desc",
+      page: Number.isInteger(value.page) && value.page > 0 ? value.page : 1,
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+function writeBrowserState(state: BrowserState) {
+  if (!state.courseId) return;
+  try {
+    const saved = JSON.parse(localStorage.getItem(BROWSE_STATE_KEY) ?? "{}") as Record<string, unknown>;
+    saved[state.courseId] = {
+      selectedNodes: [...state.selectedNodes], typeKeys: state.typeKeys, difficulties: state.difficulties,
+      institutionYears: state.institutionYears, search: state.search, sort: state.sort, page: state.page,
+    };
+    localStorage.setItem(BROWSE_STATE_KEY, JSON.stringify(saved));
+  } catch {
+    // Keep browsing usable if storage is unavailable or full.
+  }
+}
 
 const sortOptions = [
   { value: "created_desc", label: "Newest first" },
@@ -26,12 +76,23 @@ export function Browser() {
   const { courseId } = useActiveCourse();
   const { data: config } = useCourseConfig(courseId);
 
-  const [selectedNodes, setSelectedNodes] = useState<Set<string>>(new Set());
-  const [typeKeys, setTypeKeys] = useState<string[]>([]);
-  const [difficulties, setDifficulties] = useState<number[]>([]);
-  const [search, setSearch] = useState("");
-  const [sort, setSort] = useState("created_desc");
-  const [page, setPage] = useState(1);
+  const [storedState, setStoredState] = useState<BrowserState>(() => readBrowserState(courseId));
+  const browserState = storedState.courseId === courseId ? storedState : readBrowserState(courseId);
+  const { selectedNodes, typeKeys, difficulties, institutionYears, search, sort, page } = browserState;
+  function updateState(patch: Partial<Omit<BrowserState, "courseId">>) {
+    const next = { ...browserState, ...patch, courseId };
+    setStoredState(next);
+    writeBrowserState(next);
+  }
+  useEffect(() => {
+    if (storedState.courseId !== courseId) {
+      setStoredState(readBrowserState(courseId));
+      return;
+    }
+    if (!courseId) return;
+    writeBrowserState(storedState);
+  }, [courseId, storedState.courseId, selectedNodes, typeKeys, difficulties, institutionYears, search, sort, page]);
+  const { data: sourceOptions } = useQuery({ queryKey: ["question-source-options", courseId], queryFn: () => api.questionSourceOptions(courseId as string), enabled: !!courseId });
 
   const { data: counts } = useQuery({
     queryKey: ["question-counts", courseId],
@@ -39,13 +100,21 @@ export function Browser() {
     enabled: !!courseId,
   });
   const flatCounts = useMemo(() => (counts ? flattenCounts(counts.by_node) : {}), [counts]);
+  const effectiveNodeIds = useMemo(
+    () => effectiveNodeFilterIds(config?.nodes ?? [], selectedNodes),
+    [config?.nodes, selectedNodes]
+  );
+  const facetCounts = useQuestionFilterCounts(
+    courseId, config?.nodes ?? [], selectedNodes, typeKeys, difficulties
+  );
 
   const { data: results, isLoading } = useQuery({
-    queryKey: ["questions", courseId, Array.from(selectedNodes), typeKeys, difficulties, search, sort, page],
+    queryKey: ["questions", courseId, effectiveNodeIds, typeKeys, difficulties, institutionYears, search, sort, page],
     queryFn: () => api.listQuestions(courseId as string, {
-      node_id: selectedNodes.size ? Array.from(selectedNodes) : undefined,
+      node_id: effectiveNodeIds.length ? effectiveNodeIds : undefined,
       type: typeKeys.length ? typeKeys : undefined,
       difficulty: difficulties.length ? difficulties : undefined,
+      source_filters: Object.entries(institutionYears).map(([institution, years]) => ({ institution, years })),
       q: search || undefined,
       sort,
       page,
@@ -55,11 +124,7 @@ export function Browser() {
   });
 
   function handleReset() {
-    setSelectedNodes(new Set());
-    setTypeKeys([]);
-    setDifficulties([]);
-    setSearch("");
-    setPage(1);
+    updateState({ selectedNodes: new Set(), typeKeys: [], difficulties: [], institutionYears: {}, search: "", page: 1 });
   }
 
   if (!courseId) {
@@ -80,23 +145,23 @@ export function Browser() {
             counts={flatCounts}
             selectedNodes={selectedNodes}
             onSelectedNodesChange={(next) => {
-              setPage(1);
-              setSelectedNodes(next);
+              updateState({ page: 1, selectedNodes: next });
             }}
             onReset={handleReset}
             questionTypes={config?.question_types ?? []}
-            typeCounts={counts?.by_type}
+            typeCounts={facetCounts.typeCounts}
             typeKeys={typeKeys}
             onTypeKeysChange={(keys) => {
-              setPage(1);
-              setTypeKeys(keys);
+              updateState({ page: 1, typeKeys: keys });
             }}
             difficultyLevels={config?.difficulty_levels ?? []}
-            difficultyCounts={counts?.by_difficulty}
+            difficultyCounts={facetCounts.difficultyCounts}
             difficulties={difficulties}
+            institutions={sourceOptions?.institutions}
+            institutionYears={institutionYears}
+            onInstitutionYearsChange={(values) => updateState({ page: 1, institutionYears: values })}
             onDifficultiesChange={(levels) => {
-              setPage(1);
-              setDifficulties(levels);
+              updateState({ page: 1, difficulties: levels });
             }}
           />
         }
@@ -112,12 +177,11 @@ export function Browser() {
                 placeholder="Search question text"
                 value={search}
                 onChange={(e) => {
-                  setPage(1);
-                  setSearch(e.target.value);
+                  updateState({ page: 1, search: e.target.value });
                 }}
               />
             </div>
-            <Select value={sort} onValueChange={setSort}>
+            <Select value={sort} onValueChange={(value) => updateState({ sort: value, page: 1 })}>
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
@@ -190,8 +254,8 @@ export function Browser() {
         <Pagination
           page={page}
           totalPages={totalPages}
-          onPrev={() => setPage((p) => p - 1)}
-          onNext={() => setPage((p) => p + 1)}
+          onPrev={() => updateState({ page: Math.max(1, page - 1) })}
+          onNext={() => updateState({ page: Math.min(totalPages, page + 1) })}
         />
       </div>
     </>

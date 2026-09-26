@@ -84,7 +84,7 @@ function NodeRow({
           ) : null}
         </div>
 
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 items-start gap-2">
           {checks && (
             <Checkbox
               checked={selected}
@@ -92,7 +92,7 @@ function NodeRow({
               disabled={!toggleable}
             />
           )}
-          <span className="min-w-0 text-sm font-medium">
+          <span className="min-w-0 whitespace-normal break-words text-sm font-medium">
             {node.code && (
               <span className="mr-1 font-mono text-[11px] text-muted-foreground">{node.code}</span>
             )}

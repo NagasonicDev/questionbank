@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { Check, FolderTree, Gauge, Settings2, Shapes, SlidersHorizontal, X } from "lucide-react";
+import { Check, FolderTree, Gauge, Settings2, Shapes, SlidersHorizontal, X, School } from "lucide-react";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -29,9 +29,13 @@ interface FilterMenuProps {
   footerAction?: { label: string; onClick: () => void };
   /** Optional note rendered at the bottom of the content area */
   hint?: string;
+  inline?: boolean;
+  institutions?: Array<{ name: string; years: number[] }>;
+  institutionYears?: Record<string, number[]>;
+  onInstitutionYearsChange?: (values: Record<string, number[]>) => void;
 }
 
-type Tab = "structure" | "difficulty" | "type" | "options";
+type Tab = "structure" | "difficulty" | "type" | "institution" | "options";
 
 function collectChildIds(nodes: CourseNode[], acc: string[]) {
   for (const n of nodes) {
@@ -51,7 +55,7 @@ function subtreeIds(nodes: CourseNode[], id: string): string[] {
   return [];
 }
 
-function ToggleButton({
+export function ToggleButton({
   enabled,
   onClick,
   right,
@@ -116,6 +120,8 @@ export function FilterMenu({
   onAvoidRecentChange,
   footerAction,
   hint,
+  inline = false,
+  institutions = [], institutionYears = {}, onInstitutionYearsChange,
 }: FilterMenuProps) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<Tab>("structure");
@@ -124,21 +130,23 @@ export function FilterMenu({
     let n = selectedNodes.size;
     if (typeKeys.length > 0) n += 1;
     if (difficulties.length > 0) n += 1;
+    if (Object.keys(institutionYears).length > 0) n += 1;
     if (avoidRecent && avoidRecentDays != null) n += 1;
     return n;
-  }, [selectedNodes, typeKeys, difficulties, avoidRecent, avoidRecentDays]);
+  }, [selectedNodes, typeKeys, difficulties, institutionYears, avoidRecent, avoidRecentDays]);
 
   const tabs = useMemo(() => {
     const list: Array<{ key: Tab; label: string; icon: typeof FolderTree; badge?: number }> = [
       { key: "structure", label: "Course structure", icon: FolderTree, badge: selectedNodes.size || undefined },
       { key: "difficulty", label: "Difficulty", icon: Gauge, badge: difficulties.length || undefined },
       { key: "type", label: "Question type", icon: Shapes, badge: typeKeys.length || undefined },
+      { key: "institution", label: "Institution & year", icon: School, badge: Object.keys(institutionYears).length || undefined },
     ];
     if (avoidRecent) {
       list.push({ key: "options", label: "Practice options", icon: Settings2 });
     }
     return list;
-  }, [selectedNodes, difficulties, typeKeys, avoidRecent]);
+  }, [selectedNodes, difficulties, typeKeys, institutionYears, avoidRecent]);
 
   useEffect(() => {
     if (!open) return;
@@ -172,6 +180,23 @@ export function FilterMenu({
       typeKeys.includes(key) ? typeKeys.filter((t) => t !== key) : [...typeKeys, key]
     );
   }
+  function toggleInstitution(name: string) {
+    const next = { ...institutionYears };
+    if (name in next) delete next[name]; else next[name] = [];
+    onInstitutionYearsChange?.(next);
+  }
+  function toggleYear(institution: string, year: number) {
+    const current = institutionYears[institution] ?? [];
+    const nextYears = current.includes(year) ? current.filter((value) => value !== year) : [...current, year].sort((a, b) => b - a);
+    onInstitutionYearsChange?.({ ...institutionYears, [institution]: nextYears });
+  }
+  function renderInstitutions() {
+    return institutions.length === 0 ? <p className="text-sm text-muted-foreground">No institution information available.</p> : <div className="space-y-1.5">{institutions.map(({ name, years }) => {
+      const enabled = name in institutionYears;
+      const chosenYears = institutionYears[name] ?? [];
+      return <div key={name} className="space-y-1.5"><ToggleButton enabled={enabled} onClick={() => toggleInstitution(name)}>{name}</ToggleButton>{enabled && years.length > 0 && <div className="ml-4 space-y-1.5 border-l border-border pl-3"><ToggleButton enabled={chosenYears.length === 0} onClick={() => onInstitutionYearsChange?.({ ...institutionYears, [name]: [] })}>All years</ToggleButton>{years.map((year) => <ToggleButton key={year} enabled={chosenYears.includes(year)} onClick={() => toggleYear(name, year)}>{year}</ToggleButton>)}</div>}</div>;
+    })}</div>;
+  }
 
   function renderNode(node: CourseNode, depth: number): ReactNode {
     const enabled = selectedNodes.has(node.node_id);
@@ -196,6 +221,31 @@ export function FilterMenu({
       </div>
     );
   }
+
+  const filterContent = (
+    <div className={inline ? "grid gap-4 md:grid-cols-4" : "min-h-0 flex-1 overflow-y-auto p-5"}>
+      <div>
+        <p className="label mb-2">Course structure</p>
+        {nodes.length === 0 ? <p className="text-sm text-muted-foreground">No course structure yet.</p> : <div className="space-y-1.5">{nodes.map((n) => renderNode(n, 0))}</div>}
+      </div>
+      <div><p className="label mb-2">Institution & year</p>{renderInstitutions()}</div>
+      <div>
+        <p className="label mb-2">Difficulty</p>
+        <div className="space-y-1.5">
+          {difficultyLevels.map((d) => <ToggleButton key={d.level} enabled={difficulties.includes(d.level)} onClick={() => toggleDifficulty(d.level)} right={difficultyCounts?.[String(d.level)]}>{d.label}</ToggleButton>)}
+        </div>
+      </div>
+      <div>
+        <p className="label mb-2">Question type</p>
+        <div className="space-y-1.5">
+          {questionTypes.map((t) => <ToggleButton key={t} enabled={typeKeys.includes(t)} onClick={() => toggleType(t)} right={typeCounts?.[t]}>{t.replace(/_/g, " ")}</ToggleButton>)}
+        </div>
+      </div>
+      {onReset && activeCount > 0 && <div className="md:col-span-4"><Button size="sm" variant="outline" onClick={onReset}>Reset filters</Button></div>}
+    </div>
+  );
+
+  if (inline) return filterContent;
 
   return (
     <>
@@ -353,6 +403,8 @@ export function FilterMenu({
                       )}
                     </div>
                   )}
+
+                  {tab === "institution" && <div><p className="label mb-2">Institution & year</p><p className="mb-3 text-xs text-muted-foreground">Choose an institution to include all its tests, then expand it to narrow the selection to specific years.</p>{renderInstitutions()}</div>}
 
                   {tab === "options" && (
                     <div>

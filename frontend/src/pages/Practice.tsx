@@ -6,10 +6,12 @@ import { useActiveCourse } from "../hooks/useActiveCourse";
 import { useCourseConfig } from "../hooks/useCourseConfig";
 import { flattenCounts } from "../components/NodeTree";
 import { QuestionSurface } from "../components/QuestionReader";
-import type { CourseNode, Question } from "../api/types";
+import type { Question } from "../api/types";
 import { InkLoader, PageHeader, Panel } from "../components/system";
 import { FilterMenu } from "../components/FilterMenu";
 import { Button } from "../components/ui/button";
+import { effectiveNodeFilterIds } from "../lib/nodeFilters";
+import { useQuestionFilterCounts } from "../hooks/useQuestionFilterCounts";
 
 export function Practice() {
   const { courseId } = useActiveCourse();
@@ -18,10 +20,13 @@ export function Practice() {
   const [selectedNodes, setSelectedNodes] = useState<Set<string>>(new Set());
   const [typeKeys, setTypeKeys] = useState<string[]>([]);
   const [difficulties, setDifficulties] = useState<number[]>([]);
+  const [institutionYears, setInstitutionYears] = useState<Record<string, number[]>>({});
+  const { data: sourceOptions } = useQuery({ queryKey: ["question-source-options", courseId], queryFn: () => api.questionSourceOptions(courseId as string), enabled: !!courseId });
   const [avoidRecentDays, setAvoidRecentDays] = useState<number | null>(null);
   const [seenIds, setSeenIds] = useState<string[]>([]);
   const [current, setCurrent] = useState<Question | null>(null);
   const [submitted, setSubmitted] = useState(false);
+  const [selectedChoice, setSelectedChoice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -32,41 +37,21 @@ export function Practice() {
   });
   const flatCounts = useMemo(() => (counts ? flattenCounts(counts.by_node) : {}), [counts]);
 
-  // Selecting a module includes questions classified anywhere below it.
-  const selectedNodeIds = useMemo(() => {
-    const ids = new Set<string>();
-    function collectSelected(nodes: CourseNode[]): boolean {
-      let hasSelectedDescendant = false;
-      for (const node of nodes) {
-        const hasDescendant = collectSelected(node.children);
-        const selected = selectedNodes.has(node.node_id);
-        hasSelectedDescendant ||= selected || hasDescendant;
-
-        // A selected descendant refines a selected parent. Otherwise a selected
-        // node contributes its full subtree, so selecting sibling topics stays additive.
-        if (selected && !hasDescendant) {
-          const addSubtree = (branch: CourseNode[]) => {
-            for (const child of branch) {
-              ids.add(child.node_id);
-              addSubtree(child.children);
-            }
-          };
-          ids.add(node.node_id);
-          addSubtree(node.children);
-        }
-      }
-      return hasSelectedDescendant;
-    }
-    collectSelected(config?.nodes ?? []);
-    return Array.from(ids);
-  }, [config?.nodes, selectedNodes]);
+  const selectedNodeIds = useMemo(
+    () => effectiveNodeFilterIds(config?.nodes ?? [], selectedNodes),
+    [config?.nodes, selectedNodes]
+  );
+  const facetCounts = useQuestionFilterCounts(
+    courseId, config?.nodes ?? [], selectedNodes, typeKeys, difficulties
+  );
 
   const { data: filteredQuestions } = useQuery({
-    queryKey: ["practice-matching-count", courseId, selectedNodeIds, typeKeys, difficulties],
+    queryKey: ["practice-matching-count", courseId, selectedNodeIds, typeKeys, difficulties, institutionYears],
     queryFn: () => api.listQuestions(courseId as string, {
       node_id: selectedNodeIds.length ? selectedNodeIds : undefined,
       type: typeKeys.length ? typeKeys : undefined,
       difficulty: difficulties.length ? difficulties : undefined,
+      source_filters: Object.entries(institutionYears).map(([institution, years]) => ({ institution, years })),
       page_size: 1,
     }),
     enabled: !!courseId,
@@ -77,6 +62,7 @@ export function Practice() {
     setSelectedNodes(new Set());
     setTypeKeys([]);
     setDifficulties([]);
+    setInstitutionYears({});
     setAvoidRecentDays(null);
   }
 
@@ -85,6 +71,7 @@ export function Practice() {
     setLoading(true);
     setError(null);
     setSubmitted(false);
+    setSelectedChoice(null);
     try {
       const exclude = excludeCurrent && current ? [...seenIds, current.question_id] : seenIds;
       const res = await api.randomQuestion({
@@ -92,11 +79,13 @@ export function Practice() {
         node_id: selectedNodeIds.length ? selectedNodeIds : undefined,
         type: typeKeys.length ? typeKeys : undefined,
         difficulty: difficulties.length ? difficulties : undefined,
+        source_filters: Object.entries(institutionYears).map(([institution, years]) => ({ institution, years })),
         exclude_question_ids: exclude.length ? exclude : undefined,
         exclude_recent_days: avoidRecentDays ?? undefined,
       });
       if (res.question) {
         setCurrent(res.question);
+        setSelectedChoice(null);
         setSeenIds((prev) => [...prev, res.question!.question_id].slice(-50));
         // Fire-and-forget: log this as "seen" so it shows up in the Recent
         // Questions sidebar even if the person never hits Submit.
@@ -141,12 +130,15 @@ export function Practice() {
               onSelectedNodesChange={setSelectedNodes}
               onReset={handleReset}
               questionTypes={config?.question_types ?? []}
-              typeCounts={counts?.by_type}
+              typeCounts={facetCounts.typeCounts}
               typeKeys={typeKeys}
               onTypeKeysChange={setTypeKeys}
               difficultyLevels={config?.difficulty_levels ?? []}
-              difficultyCounts={counts?.by_difficulty}
+              difficultyCounts={facetCounts.difficultyCounts}
               difficulties={difficulties}
+              institutions={sourceOptions?.institutions}
+              institutionYears={institutionYears}
+              onInstitutionYearsChange={setInstitutionYears}
               onDifficultiesChange={setDifficulties}
               avoidRecent
               avoidRecentDays={avoidRecentDays}
@@ -194,6 +186,8 @@ export function Practice() {
             <QuestionSurface
               question={current}
               submitted={submitted}
+              selectedChoice={selectedChoice}
+              onSelectChoice={current.type_key === "multiple_choice" ? setSelectedChoice : undefined}
               footer={
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <Button variant="outline" disabled={loading} onClick={() => getRandomQuestion(true)}>
@@ -201,6 +195,7 @@ export function Practice() {
                     New Question
                   </Button>
                   <Button
+                    disabled={!submitted && current.type_key === "multiple_choice" && !selectedChoice}
                     onClick={() => {
                       if (submitted) {
                         setSubmitted(false);
@@ -210,7 +205,7 @@ export function Practice() {
                     }}
                   >
                     {submitted ? <Eye /> : <Check />}
-                    {submitted ? "Hide answer" : "Submit & reveal"}
+                    {submitted ? "Hide answer" : current.type_key === "multiple_choice" ? "Submit answer" : "Submit & reveal"}
                   </Button>
                 </div>
               }
