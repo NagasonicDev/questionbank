@@ -5,7 +5,7 @@ import { Search } from "lucide-react";
 import { api } from "../api/client";
 import { useActiveCourse } from "../hooks/useActiveCourse";
 import { useCourseConfig } from "../hooks/useCourseConfig";
-import { PageHeader, Panel, Meta, Pagination } from "../components/system";
+import { LoadingState, PageHeader, Panel, Meta, Pagination } from "../components/system";
 import { FilterMenu } from "../components/FilterMenu";
 import { Input } from "../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
@@ -140,6 +140,11 @@ export function Browser() {
         </Panel>
 
         <div className="mt-3 space-y-2">
+          {!results && isLoading && (
+            <Panel className="grid min-h-48 place-items-center p-8">
+              <LoadingState label="Consulting the ledger…" />
+            </Panel>
+          )}
           {results?.items.map((item) => (
             <Link
               key={item.question_id}

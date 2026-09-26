@@ -5,7 +5,7 @@ import { api, type GeneratedTestMeta } from "../api/client";
 import { useActiveCourse } from "../hooks/useActiveCourse";
 import { useCourseConfig } from "../hooks/useCourseConfig";
 import { flattenCounts } from "../components/NodeTree";
-import { Field, LoadingState, Meta, MiniRows, PageHeader, Panel, PanelHead } from "../components/system";
+import { Field, InkLoader, LoadingState, Meta, MiniRows, PageHeader, Panel, PanelHead } from "../components/system";
 import { FilterMenu } from "../components/FilterMenu";
 import { Button } from "../components/ui/button";
 import { downloadTestFile, ensureTestFileUrl } from "../lib/tests";
@@ -388,7 +388,7 @@ export function TestGenerator() {
             </div>
             {generating && (
               <div className="border-t border-border px-5 py-3">
-                <LoadingState label="Selecting questions and preparing your paper…" />
+                <InkLoader messages={["Quaestio is pondering…", "Consulting the ledger…", "Tallying the marks…", "Setting the paper…"]} />
               </div>
             )}
           </Panel>

@@ -7,7 +7,7 @@ import { useCourseConfig } from "../hooks/useCourseConfig";
 import { flattenCounts } from "../components/NodeTree";
 import { QuestionSurface } from "../components/QuestionReader";
 import type { CourseNode, Question } from "../api/types";
-import { LoadingState, PageHeader, Panel } from "../components/system";
+import { InkLoader, PageHeader, Panel } from "../components/system";
 import { FilterMenu } from "../components/FilterMenu";
 import { Button } from "../components/ui/button";
 
@@ -166,7 +166,7 @@ export function Practice() {
 
           {loading && (
             <Panel className="grid min-h-80 place-items-center p-8">
-              <LoadingState label="Finding a question that matches your filters…" />
+              <InkLoader messages={["Dipping the pen…", "Consulting the ledger…", "Ruling the margin…", "Choosing a question…"]} />
             </Panel>
           )}
 

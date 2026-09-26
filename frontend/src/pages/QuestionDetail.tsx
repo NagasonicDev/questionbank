@@ -3,7 +3,7 @@ import { useParams, Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Eye } from "lucide-react";
 import { api } from "../api/client";
-import { PageHeader, Panel } from "../components/system";
+import { LoadingState, PageHeader, Panel } from "../components/system";
 import { QuestionSurface } from "../components/QuestionReader";
 import { Button } from "../components/ui/button";
 
@@ -17,7 +17,7 @@ export function QuestionDetail() {
     enabled: !!questionId,
   });
 
-  if (isLoading) return <p className="text-sm text-muted-foreground">Loading…</p>;
+  if (isLoading) return <div className="panel grid min-h-64 place-items-center p-8"><LoadingState /></div>;
   if (!question) return <p className="text-sm text-muted-foreground">Question not found.</p>;
 
   const sourceParts = question.source

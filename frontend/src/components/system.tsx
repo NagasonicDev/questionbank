@@ -1,5 +1,4 @@
-import type { ReactNode } from "react";
-import { LoaderCircle } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 
@@ -39,16 +38,42 @@ export function Panel({ children, className }: { children: ReactNode; className?
 }
 
 export function LoadingState({
-  label = "Loading…",
+  label = "Quaestio is pondering…",
   className,
 }: {
   label?: string;
   className?: string;
 }) {
   return (
-    <div className={cn("flex items-center justify-center gap-2 text-sm text-muted-foreground", className)} role="status" aria-live="polite">
-      <LoaderCircle className="size-4 animate-spin text-accent-foreground" aria-hidden="true" />
-      <span>{label}</span>
+    <InkLoader messages={[label]} className={className} />
+  );
+}
+
+export function InkLoader({
+  messages = ["Quaestio is pondering…"],
+  className,
+}: {
+  messages?: string[];
+  className?: string;
+}) {
+  const [index, setIndex] = useState(0);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setIndex((current) => (current + 1) % messages.length);
+    }, 900);
+    return () => window.clearInterval(timer);
+  }, [messages.length]);
+
+  return (
+    <div className={cn("ink-loader", className)} role="status" aria-live="polite">
+      <span className="ink-loader-q font-display" aria-hidden="true">Q</span>
+      <div className="ink-rule" aria-hidden="true">
+        <span className="ink-rule-line" />
+        <span className="ink-rule-nib" />
+      </div>
+      <div className="ink-drops" aria-hidden="true"><span /><span /><span /></div>
+      <p className="label ink-loader-message">{messages[index % messages.length]}</p>
     </div>
   );
 }
