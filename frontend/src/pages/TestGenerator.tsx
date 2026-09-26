@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Download, Eye, FileText, Plus, Printer, Trash2 } from "lucide-react";
 import { api, type GeneratedTestMeta } from "../api/client";
 import { useActiveCourse } from "../hooks/useActiveCourse";
@@ -11,17 +11,25 @@ import { Button } from "../components/ui/button";
 import { downloadTestFile, ensureTestFileUrl } from "../lib/tests";
 import { Input } from "../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import { effectiveNodeFilterIds } from "../lib/nodeFilters";
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
 
+function formatDurationClock(seconds: number) {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return mins ? `${mins}m ${String(secs).padStart(2, "0")}s` : `${secs}s`;
+}
+
 interface SectionDraft {
   id: number;
   name: string;
-  typeKey: string; // "" = any type
-  mode: "count" | "marks";
-  count: number;
+  nodeIds: Set<string>;
+  typeKeys: string[];
+  difficulties: number[];
+  institutionYears: Record<string, number[]>;
   marks: number;
 }
 
@@ -31,22 +39,29 @@ export function TestGenerator() {
   const qc = useQueryClient();
   const nextId = useRef(2);
 
-  const [selectedNodes, setSelectedNodes] = useState<Set<string>>(new Set());
-  const [typeKeys, setTypeKeys] = useState<string[]>([]);
-  const [difficulties, setDifficulties] = useState<number[]>([]);
   const [sections, setSections] = useState<SectionDraft[]>([
-    { id: 1, name: "", typeKey: "", mode: "count", count: 10, marks: 10 },
+    { id: 1, name: "", nodeIds: new Set(), typeKeys: [], difficulties: [], institutionYears: {}, marks: 20 },
   ]);
   const [format, setFormat] = useState<"docx" | "pdf">("docx");
   const [shuffle, setShuffle] = useState(true);
   const [title, setTitle] = useState("");
 
   const [generating, setGenerating] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [estimatedSeconds, setEstimatedSeconds] = useState(20);
+  const [generationPhase, setGenerationPhase] = useState<"selecting" | "hydrating" | "paper" | "solutions" | "preview" | "saving">("selecting");
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<GeneratedTestMeta | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState<string | null>(null);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!generating || startedAt == null) return;
+    const timer = window.setInterval(() => setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, [generating, startedAt]);
 
   const { data: counts } = useQuery({
     queryKey: ["question-counts", courseId],
@@ -54,6 +69,42 @@ export function TestGenerator() {
     enabled: !!courseId,
   });
   const flatCounts = useMemo(() => (counts ? flattenCounts(counts.by_node) : {}), [counts]);
+  const { data: sourceOptions } = useQuery({ queryKey: ["question-source-options", courseId], queryFn: () => api.questionSourceOptions(courseId as string), enabled: !!courseId });
+
+  const estimateSections = useMemo(() => sections.map((s) => ({
+    node_ids: s.nodeIds.size ? effectiveNodeFilterIds(config?.nodes ?? [], s.nodeIds).sort() : undefined,
+    type_keys: s.typeKeys.length ? [...s.typeKeys].sort() : undefined,
+    difficulties: s.difficulties.length ? [...s.difficulties].sort((a, b) => a - b) : undefined,
+    source_filters: Object.entries(s.institutionYears).map(([institution, years]) => ({ institution, years })),
+    marks: s.marks,
+  })), [sections, config?.nodes]);
+  const { data: availability, isLoading: loadingAvailability } = useQuery({
+    queryKey: ["test-availability", courseId, estimateSections],
+    queryFn: () => api.estimateTestSections(courseId as string, estimateSections),
+    enabled: !!courseId,
+  });
+  const sectionFacetQueries = useQueries({
+    queries: sections.flatMap((section) => {
+      const nodeIds = effectiveNodeFilterIds(config?.nodes ?? [], section.nodeIds).sort();
+      const types = [...section.typeKeys].sort();
+      const difficulties = [...section.difficulties].sort((a, b) => a - b);
+      return [
+        {
+          queryKey: ["test-type-facet-counts", courseId, nodeIds, difficulties],
+          queryFn: () => api.questionCounts(courseId as string, { node_ids: nodeIds, difficulties }),
+          enabled: !!courseId,
+        },
+        {
+          queryKey: ["test-difficulty-facet-counts", courseId, nodeIds, types],
+          queryFn: () => api.questionCounts(courseId as string, {
+            node_ids: nodeIds,
+            type: types.length ? types : undefined,
+          }),
+          enabled: !!courseId,
+        },
+      ];
+    }),
+  });
 
   const { data: pastTests, isLoading: loadingPastTests, refetch: refetchPastTests } = useQuery({
     queryKey: ["tests", courseId],
@@ -62,32 +113,14 @@ export function TestGenerator() {
   });
 
   const summary = useMemo(() => {
-    const questionsRequested = sections
-      .filter((s) => s.mode === "count")
-      .reduce((sum, s) => sum + Math.max(0, s.count), 0);
-    const marksRequested = sections
-      .filter((s) => s.mode === "marks")
-      .reduce((sum, s) => sum + Math.max(0, s.marks), 0);
-    return { questionsRequested, marksRequested };
-  }, [sections]);
+    return {
+      marksRequested: sections.reduce((sum, s) => sum + s.marks, 0),
+      availableQuestions: availability?.reduce((sum, s) => sum + s.question_count, 0) ?? 0,
+      availableMarks: availability?.reduce((sum, s) => sum + s.available_marks, 0) ?? 0,
+    };
+  }, [sections, availability]);
 
-  const allSectionsValid =
-    sections.length > 0 &&
-    sections.every((s) => (s.mode === "count" ? s.count >= 1 : s.marks > 0));
-
-  const levelLabels = useMemo(() => {
-    const m = new Map<number, string>();
-    for (const d of config?.difficulty_levels ?? []) m.set(d.level, d.label);
-    return m;
-  }, [config]);
-
-  const scopeText = `${config?.hierarchy[0]?.label ?? "Topics"}: ${
-    selectedNodes.size ? `${selectedNodes.size} selected` : "all"
-  } · Difficulties: ${
-    difficulties.length
-      ? difficulties.map((d) => levelLabels.get(d) ?? String(d)).join(", ")
-      : "all"
-  } · Types: ${typeKeys.length ? typeKeys.map((t) => t.replace(/_/g, " ")).join(", ") : "all"}`;
+  const allSectionsValid = sections.length > 0 && sections.every((s) => s.marks >= 5 && s.marks <= 80);
 
   useEffect(() => {
     if (!result) {
@@ -129,12 +162,12 @@ export function TestGenerator() {
       ["Marks", String(result?.achieved_marks ?? 0)],
     ] as Array<[string, string]>;
   }, [result]);
-
-  function handleReset() {
-    setSelectedNodes(new Set());
-    setTypeKeys([]);
-    setDifficulties([]);
-  }
+  const markMismatches = useMemo(
+    () => result?.section_results?.filter(
+      (section) => section.selection_limited || (section.marks_requested != null && Math.abs(section.marks - section.marks_requested) > 0.009)
+    ) ?? [],
+    [result]
+  );
 
   function updateSection(id: number, patch: Partial<SectionDraft>) {
     setSections((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
@@ -142,7 +175,7 @@ export function TestGenerator() {
   function addSection() {
     setSections((prev) => [
       ...prev,
-      { id: nextId.current++, name: "", typeKey: "", mode: "count", count: 10, marks: 10 },
+      { id: nextId.current++, name: "", nodeIds: new Set(), typeKeys: [], difficulties: [], institutionYears: {}, marks: 20 },
     ]);
   }
   function removeSection(id: number) {
@@ -162,23 +195,45 @@ export function TestGenerator() {
   async function handleGenerate() {
     if (!courseId) return;
     setGenerating(true);
+    const start = Date.now();
+    setStartedAt(start);
+    setElapsedSeconds(0);
+    setGenerationPhase("selecting");
+    const estimatedQuestionCount = sections.reduce((sum, section, index) => {
+      const available = availability?.[index];
+      const averageMarks = available && available.question_count > 0
+        ? available.available_marks / available.question_count
+        : 0;
+      return sum + (averageMarks > 0 ? section.marks / averageMarks : 0);
+    }, 0);
+    const perQuestion = format === "pdf" ? 5 : 4;
+    const initialEstimate = Math.max(20, Math.round(15 + estimatedQuestionCount * perQuestion));
+    setEstimatedSeconds(initialEstimate);
     setError(null);
     setResult(null);
     try {
       const meta = await api.generateTest(courseId, {
         title: title.trim() || undefined,
-        node_ids: selectedNodes.size ? Array.from(selectedNodes) : undefined,
         format,
         shuffle,
+        selectionTimeoutMs: Math.ceil(initialEstimate * 1.25 * 1000),
         sections: sections.map((s) => ({
           name: s.name.trim() || undefined,
-          node_ids: selectedNodes.size ? Array.from(selectedNodes) : undefined,
-          type_key: s.typeKey || undefined,
-          type_keys: s.typeKey ? undefined : (typeKeys.length ? typeKeys : undefined),
-          difficulties: difficulties.length ? difficulties : undefined,
-          count: s.mode === "count" ? s.count : undefined,
-          marks: s.mode === "marks" ? s.marks : undefined,
+          node_ids: s.nodeIds.size ? effectiveNodeFilterIds(config?.nodes ?? [], s.nodeIds) : undefined,
+          type_keys: s.typeKeys.length ? s.typeKeys : undefined,
+          difficulties: s.difficulties.length ? s.difficulties : undefined,
+          source_filters: Object.entries(s.institutionYears).map(([institution, years]) => ({ institution, years })),
+          marks: s.marks,
         })),
+        onProgress: (progress) => {
+          setGenerationPhase(progress.phase);
+          if (progress.questionCount != null && progress.phase !== "selecting") {
+            // PDF generation lays out the paper and solutions separately; DOCX
+            // also builds a PDF preview. Keep estimates conservative for those passes.
+            const perQuestion = format === "pdf" ? 5 : 4;
+            setEstimatedSeconds(Math.max(20, Math.round(15 + progress.questionCount * perQuestion)));
+          }
+        },
       });
       setResult(meta);
       refetchPastTests();
@@ -186,6 +241,7 @@ export function TestGenerator() {
       setError(e instanceof Error ? e.message : "Failed to generate test");
     } finally {
       setGenerating(false);
+      setStartedAt(null);
     }
   }
 
@@ -205,25 +261,7 @@ export function TestGenerator() {
       <PageHeader
         eyebrow="Assessment design"
         title="Test Generator"
-        description="Build a test paper section by section — each section picks its own question type and either a number of questions or a marks target. The result is a print-ready paper plus a separate solutions document."
-        actions={
-          <FilterMenu
-            nodes={config?.nodes ?? []}
-            counts={flatCounts}
-            selectedNodes={selectedNodes}
-            onSelectedNodesChange={setSelectedNodes}
-            onReset={handleReset}
-            questionTypes={config?.question_types ?? []}
-            typeCounts={counts?.by_type}
-            typeKeys={typeKeys}
-            onTypeKeysChange={setTypeKeys}
-            difficultyLevels={config?.difficulty_levels ?? []}
-            difficultyCounts={counts?.by_difficulty}
-            difficulties={difficulties}
-            onDifficultiesChange={setDifficulties}
-            hint="Selected topics, difficulty and question type apply to every section. A section that picks its own question type still wins over the default."
-          />
-        }
+        description="Build a print-ready paper section by section. Set a marks target and tailored topic, type and difficulty filters for each section."
       />
 
       <div className="min-w-0 space-y-5">
@@ -237,17 +275,14 @@ export function TestGenerator() {
                   placeholder={`${config?.name ?? "Course"} — Practice Test`}
                 />
               </Field>
-              <div>
-                <p className="label">Current scope</p>
-                <p className="mt-1.5 text-sm text-muted-foreground">{scopeText}</p>
-              </div>
+              <p className="self-center text-sm text-muted-foreground">Each section has its own topic, type and difficulty filters.</p>
             </div>
           </Panel>
 
           <Panel>
             <PanelHead
               title="2 · Build sections"
-              note="Questions are picked independently for each section."
+              note="Set the marks target and filters independently for each section."
               action={
                 <Button size="sm" onClick={addSection}>
                   <Plus />
@@ -258,7 +293,7 @@ export function TestGenerator() {
             <div className="space-y-3 p-5">
               {sections.map((sec, index) => (
                 <div key={sec.id} className="rounded-lg border border-border bg-surface/50 p-4">
-                  <div className="grid items-end gap-3 lg:grid-cols-[28px_minmax(140px,1fr)_160px_150px_80px_auto]">
+                  <div className="grid items-end gap-3 sm:grid-cols-[28px_minmax(140px,1fr)_auto]">
                     <span className="self-center font-mono text-xs text-muted-foreground">
                       {String(index + 1).padStart(2, "0")}
                     </span>
@@ -269,51 +304,12 @@ export function TestGenerator() {
                         placeholder="Section I (optional)"
                       />
                     </Field>
-                    <Field label="Question type">
-                      <Select
-                        value={sec.typeKey || "all"}
-                        onValueChange={(v) => updateSection(sec.id, { typeKey: v === "all" ? "" : v })}
-                      >
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="all">Any type</SelectItem>
-                          {(config?.question_types ?? []).map((t) => (
-                            <SelectItem key={t} value={t}>
-                              {t.replace(/_/g, " ")}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </Field>
-                    <Field label="Selection">
-                      <Select
-                        value={sec.mode}
-                        onValueChange={(v) => updateSection(sec.id, { mode: v as "count" | "marks" })}
-                      >
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="count">Question count</SelectItem>
-                          <SelectItem value="marks">Marks target</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </Field>
-                    <Field label={sec.mode === "count" ? "How many" : "Total marks"}>
-                      <Input
-                        type="number"
-                        min={1}
-                        step={sec.mode === "count" ? 1 : 0.5}
-                        value={sec.mode === "count" ? sec.count : sec.marks}
-                        onChange={(e) =>
-                          updateSection(sec.id, sec.mode === "count"
-                            ? { count: Number(e.target.value) }
-                            : { marks: Number(e.target.value) })
-                        }
-                      />
-                    </Field>
+                    <div className="w-64 max-w-full">
+                      <Field label={`Section marks · ${sec.marks}`}>
+                        <input aria-label={`Section ${index + 1} marks`} className="mt-2 h-2 w-full cursor-pointer appearance-none rounded-full bg-muted accent-primary" type="range" min={5} max={80} step={1} value={sec.marks} onChange={(e) => updateSection(sec.id, { marks: Number(e.target.value) })} />
+                        <div className="mt-1 flex justify-between font-mono text-[10px] text-muted-foreground"><span>5</span><span>80 marks</span></div>
+                      </Field>
+                    </div>
                     <div className="flex items-center gap-1 pb-0.5">
                       <Button
                         size="icon"
@@ -343,6 +339,24 @@ export function TestGenerator() {
                         <Trash2 className="size-4 text-destructive" />
                       </Button>
                     </div>
+                  </div>
+                  <div className="mt-4 border-t border-border pt-4">
+                    <p className="label mb-2">Section filters</p>
+                    <FilterMenu
+                      inline
+                      nodes={config?.nodes ?? []} counts={flatCounts} selectedNodes={sec.nodeIds}
+                      onSelectedNodesChange={(nodeIds) => updateSection(sec.id, { nodeIds })}
+                      onReset={() => updateSection(sec.id, { nodeIds: new Set(), typeKeys: [], difficulties: [], institutionYears: {} })}
+                      questionTypes={config?.question_types ?? []} typeCounts={sectionFacetQueries[index * 2]?.data?.by_type}
+                      typeKeys={sec.typeKeys} onTypeKeysChange={(typeKeys) => updateSection(sec.id, { typeKeys })}
+                      difficultyLevels={config?.difficulty_levels ?? []} difficultyCounts={sectionFacetQueries[index * 2 + 1]?.data?.by_difficulty}
+                      difficulties={sec.difficulties} onDifficultiesChange={(difficulties) => updateSection(sec.id, { difficulties })}
+                      institutions={sourceOptions?.institutions} institutionYears={sec.institutionYears} onInstitutionYearsChange={(institutionYears) => updateSection(sec.id, { institutionYears })}
+                    />
+                    <span className="ml-2 text-xs text-muted-foreground">{sec.nodeIds.size || "All"} topics · {sec.typeKeys.length || "All"} types · {sec.difficulties.length || "All"} difficulties</span>
+                    <p className="mt-2 text-sm font-medium" aria-live="polite">
+                      Available: {loadingAvailability || !availability ? "Updating…" : `${availability[index]?.question_count ?? 0} questions · ${availability[index]?.available_marks ?? 0} marks`}
+                    </p>
                   </div>
                 </div>
               ))}
@@ -378,8 +392,7 @@ export function TestGenerator() {
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-5 py-4">
               <Meta>
                 {sections.length} section{sections.length === 1 ? "" : "s"} ·{" "}
-                {summary.questionsRequested} question{summary.questionsRequested === 1 ? "" : "s"} requested ·{" "}
-                {summary.marksRequested} marks requested.
+                {summary.marksRequested} marks requested · {loadingAvailability || !availability ? "Updating availability…" : `${summary.availableQuestions} available questions · ${summary.availableMarks} available marks`}
               </Meta>
               <Button disabled={generating || !allSectionsValid} onClick={handleGenerate}>
                 <Printer />
@@ -388,7 +401,45 @@ export function TestGenerator() {
             </div>
             {generating && (
               <div className="border-t border-border px-5 py-3">
-                <InkLoader messages={["Quaestio is pondering…", "Consulting the ledger…", "Tallying the marks…", "Setting the paper…"]} />
+                <InkLoader intervalMs={4000} messages={{
+                  selecting: [
+                    "Finding the closest mark combination…",
+                    "Checking question marks against your target…",
+                    "Comparing possible question combinations…",
+                    "Choosing the best match for your requested marks…",
+                  ],
+                  hydrating: [
+                    "Loading the selected questions…",
+                    "Gathering question text and diagrams…",
+                    "Collecting answer choices and mark details…",
+                    "Preparing the selected questions for your paper…",
+                  ],
+                  paper: [
+                    `Building the ${format.toUpperCase()} paper…`,
+                    "Laying out questions and answer spaces…",
+                    "Formatting headings, marks, and page breaks…",
+                    "Rendering the paper pages…",
+                  ],
+                  solutions: [
+                    `Building the ${format.toUpperCase()} solutions…`,
+                    "Laying out worked solutions and marking points…",
+                    "Formatting the answer key…",
+                    "Rendering the solutions pages…",
+                  ],
+                  preview: [
+                    "Preparing the in-app PDF preview…",
+                    "Opening the generated paper preview…",
+                    "Finishing the preview document…",
+                  ],
+                  saving: [
+                    "Saving the generated files…",
+                    "Writing the paper and solutions to your question bank…",
+                    "Finishing up and saving your test…",
+                  ],
+                }[generationPhase]} />
+                <p className="mt-2 text-center text-xs text-muted-foreground">
+                  Elapsed {formatDurationClock(elapsedSeconds)} · Estimated total about {formatDurationClock(estimatedSeconds)}
+                </p>
               </div>
             )}
           </Panel>
@@ -417,6 +468,17 @@ export function TestGenerator() {
                   </div>
                 }
               />
+              {markMismatches.length > 0 && (
+                <div className="mx-5 mt-4 rounded-md border border-border bg-muted/50 px-3 py-2 text-sm" role="status">
+                  {markMismatches.map((section, index) => (
+                    <p key={`${section.name}-${index}`}>
+                      {section.selection_limited
+                        ? `${section.name}: the search reached its time limit, so it used the closest combination found so far (${section.marks} marks for a ${section.marks_requested}-mark target).`
+                        : `${section.name}: the requested ${section.marks_requested} marks weren’t achievable exactly; the closest available total was ${section.marks} marks.`}
+                    </p>
+                  ))}
+                </div>
+              )}
               <div className="grid gap-4 p-5 xl:grid-cols-[220px_1fr]">
                 <div>
                   <p className="label">Actual selection</p>

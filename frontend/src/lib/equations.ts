@@ -16,7 +16,9 @@ function getHolder(): HTMLDivElement {
     holder.style.position = "fixed";
     holder.style.left = "-99999px";
     holder.style.top = "0";
-    holder.style.visibility = "hidden";
+  // Keep the formula visible to html-to-image. The holder is already outside
+  // the viewport, so hiding it here also hides it in the cloned render tree.
+  holder.style.visibility = "visible";
     holder.style.pointerEvents = "none";
     document.body.appendChild(holder);
   }
@@ -46,6 +48,7 @@ export async function renderLatexPng(
   wrap.style.display = "inline-block";
   wrap.style.lineHeight = "normal";
   wrap.style.background = "transparent";
+  wrap.style.color = "#000000";
   try {
     katex.render(latex, wrap, { throwOnError: false, displayMode: display });
     const holder = getHolder();

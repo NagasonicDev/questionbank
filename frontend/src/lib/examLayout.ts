@@ -1,5 +1,14 @@
 import type { DocSection } from "./docx";
 
+/** Two handwriting lines per mark, with at least one line for a marked part. */
+export function responseLinesForMarks(marks: number | null | undefined): number {
+  return Math.max(1, Math.ceil((marks ?? 0) * 2));
+}
+
+export function isWrittenResponseType(typeKey: string): boolean {
+  return typeKey === "extended_response" || typeKey === "short_response" || typeKey === "short_answer";
+}
+
 /** Shared HSC-style examination paper layout (NESA conventions). */
 export const EXAM = {
   /** A4 */

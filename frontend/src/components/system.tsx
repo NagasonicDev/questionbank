@@ -52,25 +52,26 @@ export function LoadingState({
 export function InkLoader({
   messages = ["Quaestio is pondering…"],
   className,
+  intervalMs = 5900,
 }: {
   messages?: string[];
   className?: string;
+  intervalMs?: number;
 }) {
   const [index, setIndex] = useState(0);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
       setIndex((current) => (current + 1) % messages.length);
-    }, 900);
+    }, intervalMs);
     return () => window.clearInterval(timer);
-  }, [messages.length]);
+  }, [messages.length, intervalMs]);
 
   return (
     <div className={cn("ink-loader", className)} role="status" aria-live="polite">
       <span className="ink-loader-q font-display" aria-hidden="true">Q</span>
       <div className="ink-rule" aria-hidden="true">
         <span className="ink-rule-line" />
-        <span className="ink-rule-nib" />
       </div>
       <div className="ink-drops" aria-hidden="true"><span /><span /><span /></div>
       <p className="label ink-loader-message">{messages[index % messages.length]}</p>

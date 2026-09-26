@@ -26,6 +26,8 @@ import {
   buildExamPaperPlan,
   formatMcOption,
   generalInstructionsLines,
+  isWrittenResponseType,
+  responseLinesForMarks,
   isMcOptionLine,
   sectionOpeningLines,
   sectionOverviewLines,
@@ -52,6 +54,7 @@ export interface DocOptions {
   courseName: string;
   achievedMarks: number;
   sections: DocSection[];
+  resolvedImages?: Map<string, ResolvedImage>;
 }
 
 function runProps(opts: {
@@ -417,7 +420,18 @@ function renderQuestion(
 ): Array<Paragraph | Table> {
   const out: Array<Paragraph | Table> = [];
   out.push(questionHeader(question, counter));
-  out.push(...renderBlocks(question.body, { indentIn: 0, images }));
+  const questionBody = question.parts.length
+    ? question.body.filter((block) => block.block_type !== "answer_area")
+    : question.body;
+  out.push(...renderBlocks(questionBody, { indentIn: 0, images }));
+  if (question.mcq_options?.length) {
+    const items = question.mcq_options.map((option, i) => {
+      const label = String.fromCharCode(65 + i);
+      const text = option.content.map((block) => String(block.content.text ?? block.content.latex ?? "")).join(" ");
+      return `(${label}) ${text}`;
+    });
+    out.push(...renderBlocks([{ block_id: `${question.question_id}-mcq-options`, slot: "body", position: 0, block_type: "list", content: { ordered: false, items } } as ContentBlock], { indentIn: 0, images }));
+  }
   for (const part of question.parts) {
     const labelText = part.part_label ?? "";
     const marks = marksLabel(part.marks);
@@ -433,6 +447,15 @@ function renderQuestion(
       new Paragraph({ children: headChildren, indent: { left: inches(0.3) } })
     );
     out.push(...renderBlocks(part.body, { indentIn: 0.3, images }));
+    if (isWrittenResponseType(question.type_key) && !part.body.some((block) => block.block_type === "answer_area")) {
+      out.push(...renderBlocks([{
+        block_id: `${part.question_id}-generated-answer-area`,
+        slot: "body",
+        position: part.body.length,
+        block_type: "answer_area",
+        content: { lines: responseLinesForMarks(part.marks) },
+      }], { indentIn: 0.3, images }));
+    }
   }
   const src = formatSourceBracket(question.source);
   if (src) {
@@ -523,6 +546,7 @@ function hscCoverPage(children: Array<Paragraph | Table>, opts: DocOptions): voi
   );
 
   children.push(
+    new Paragraph({ spacing: { after: 180 } }),
     boxedParagraphs(generalInstructionsLines(plan)),
     new Paragraph({ spacing: { before: 240 } }),
     new Paragraph({
@@ -564,10 +588,12 @@ function appendSectionHeader(children: Array<Paragraph | Table>, sec: ReturnType
           spacing: { before: 240, after: 80 },
         })
       );
+      children.push(new Paragraph({ border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: "777777", space: 1 } }, spacing: { after: 100 } }));
     } else if (line.endsWith(" marks")) {
       children.push(new Paragraph({ children: [runProps({ text: line, bold: true })], spacing: { after: 80 } }));
     } else {
       children.push(new Paragraph({ children: [runProps({ text: line })], spacing: { after: 60 } }));
+      if (line.startsWith("Allow about ")) children.push(new Paragraph({ border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: "777777", space: 1 } }, spacing: { after: 100 } }));
     }
   }
 }
@@ -632,11 +658,14 @@ function pack(children: Array<Paragraph | Table>): Promise<Blob> {
 
 // ---------- public builders ----------
 
-async function collectImages(sections: DocSection[]): Promise<Map<string, ResolvedImage>> {
+export async function collectImages(sections: DocSection[]): Promise<Map<string, ResolvedImage>> {
   const blocks: ContentBlock[] = [];
   for (const sec of sections) {
     for (const q of sec.questions) {
       blocks.push(...blocksOfQuestion(q, ["body", "answer", "solution", "marking_criteria"]));
+      if (q.mcq_options?.length) {
+        blocks.push({ block_id: `${q.question_id}-mcq-options`, slot: "body", position: q.body.length, block_type: "list", content: { ordered: false, items: q.mcq_options.map((option, i) => `(${String.fromCharCode(65 + i)}) ${option.content.map((b) => String(b.content.text ?? b.content.latex ?? "")).join(" ")}`) } });
+      }
       for (const part of q.parts) {
         blocks.push(...blocksOfQuestion(part, ["body", "answer", "solution", "marking_criteria"]));
       }
@@ -648,7 +677,7 @@ async function collectImages(sections: DocSection[]): Promise<Map<string, Resolv
 }
 
 export async function buildDocxPaper(opts: DocOptions): Promise<Blob> {
-  const images = await collectImages(opts.sections);
+  const images = opts.resolvedImages ?? await collectImages(opts.sections);
   const plan = buildExamPaperPlan(opts);
   const children: Array<Paragraph | Table> = [];
   hscCoverPage(children, opts);
@@ -664,6 +693,18 @@ export async function buildDocxPaper(opts: DocOptions): Promise<Blob> {
     appendSectionHeader(children, secPlan);
     for (const q of sec.questions) {
       children.push(...renderQuestion(q, counter, images));
+      const type = (q.type_key ?? "").toLowerCase();
+      if (type !== "multiple_choice" && !(q.parts.length && isWrittenResponseType(type))) {
+        const lineCount = Math.max(0, Math.floor((q.marks ?? 0) * 3 + 2));
+        for (let i = 0; i < lineCount; i++) {
+          children.push(new Paragraph({
+            children: [runProps({ text: " " })],
+            border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: "999999", space: 1 } },
+            spacing: { before: 20, after: 20 },
+            keepNext: i < lineCount - 1,
+          }));
+        }
+      }
     }
   }
   return pack(children);
@@ -671,7 +712,7 @@ export async function buildDocxPaper(opts: DocOptions): Promise<Blob> {
 
 export async function buildDocxSolutions(opts: DocOptions): Promise<Blob> {
   const dateStr = todayPretty();
-  const images = await collectImages(opts.sections);
+  const images = opts.resolvedImages ?? await collectImages(opts.sections);
   const children: Array<Paragraph | Table> = [];
   children.push(
     new Paragraph({

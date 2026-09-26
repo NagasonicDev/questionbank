@@ -3,9 +3,12 @@ import {
   PDFFont,
   PDFImage,
   PageSizes,
-  StandardFonts,
   rgb,
 } from "pdf-lib";
+import fontkit from "@pdf-lib/fontkit";
+import notoSerifRegularUrl from "../assets/NotoSerif-Regular.ttf?url";
+import notoSerifBoldUrl from "../assets/NotoSerif-Bold.ttf?url";
+import notoSerifItalicUrl from "../assets/NotoSerif-Italic.ttf?url";
 import type { ContentBlock, Question } from "../api/types";
 import { contentOf, criteriaRows, formatMarks, formatSourceBracket, marksLabel } from "./criteria";
 import { inlineMathImageId, resolveEquations, resolveImages, type ResolvedImage } from "./resolvers";
@@ -15,6 +18,8 @@ import {
   buildExamPaperPlan,
   formatMcOption,
   formatPageNumber,
+  isWrittenResponseType,
+  responseLinesForMarks,
   generalInstructionsLines,
   isMcOptionLine,
   sectionOpeningLines,
@@ -50,7 +55,34 @@ interface Fonts {
   mono: PDFFont;
 }
 
+async function embedUnicodeFonts(pdf: PDFDocument): Promise<Fonts> {
+  pdf.registerFontkit(fontkit);
+  const [reg, bold, italic] = await Promise.all([
+    notoSerifRegularUrl,
+    notoSerifBoldUrl,
+    notoSerifItalicUrl,
+  ].map(async (url) => new Uint8Array(await (await fetch(url)).arrayBuffer())));
+  return {
+    reg: await pdf.embedFont(reg, { subset: true }),
+    bold: await pdf.embedFont(bold, { subset: true }),
+    italic: await pdf.embedFont(italic, { subset: true }),
+    mono: await pdf.embedFont(reg, { subset: true }),
+  };
+}
+
+const charSets = new WeakMap<PDFFont, Set<number>>();
+function pdfSafeText(text: string, font: PDFFont): string {
+  let chars = charSets.get(font);
+  if (!chars) { chars = new Set(font.getCharacterSet()); charSets.set(font, chars); }
+  const replacements: Record<string, string> = { "√": "sqrt ", "−": "-", "→": "->" };
+  return Array.from(text, (c) => chars!.has(c.codePointAt(0)!) ? c : replacements[c] ?? `[U+${c.codePointAt(0)!.toString(16).toUpperCase()}]`).join("");
+}
+function drawSafeText(page: ReturnType<PDFDocument["addPage"]>, text: string, opts: Parameters<ReturnType<PDFDocument["addPage"]>["drawText"]>[1] & { font: PDFFont }) {
+  page.drawText(pdfSafeText(text, opts.font), opts);
+}
+
 function wrapText(font: PDFFont, text: string, size: number, maxWidth: number): string[] {
+  text = pdfSafeText(text, font);
   const out: string[] = [];
   for (const rawLine of text.split("\n")) {
     const words = rawLine.split(/\s+/).filter(Boolean).flatMap((word) => {
@@ -113,7 +145,7 @@ class Writer {
     const size = EXAM.font.smallPt;
     const font = this.fonts.reg;
     const tw = font.widthOfTextAtSize(label, size);
-    this.page.page.drawText(label, {
+    drawSafeText(this.page.page, label, {
       x: MARGIN_L + (BODY_W + MARKS_COL - tw) / 2,
       y: FOOTER_Y,
       size,
@@ -138,9 +170,10 @@ class Writer {
     if (!marks) return;
     const size = EXAM.font.bodyPt;
     const font = this.fonts.reg;
+    marks = pdfSafeText(marks, font);
     const y = lineY ?? this.y;
     const tw = font.widthOfTextAtSize(marks, size);
-    this.page.page.drawText(marks, {
+    drawSafeText(this.page.page, marks, {
       x: MARGIN_L + BODY_W + MARKS_COL - tw - 2,
       y,
       size,
@@ -179,7 +212,7 @@ class Writer {
           : align === "right"
             ? MARGIN_L + BODY_W - font.widthOfTextAtSize(line, size)
             : MARGIN_L + (BODY_W - font.widthOfTextAtSize(line, size)) / 2;
-      this.page.page.drawText(line, { x, y: this.y, size, font, color });
+      drawSafeText(this.page.page, line, { x, y: this.y, size, font, color });
       this.y -= LINE_H(size);
     }
   }
@@ -187,6 +220,7 @@ class Writer {
   textLine(line: string, opts: { size?: number; font?: PDFFont; color?: ReturnType<typeof rgb>; x?: number; align?: "left" | "right" | "center" }) {
     const size = opts.size ?? EXAM.font.bodyPt;
     const font = opts.font ?? this.fonts.reg;
+    line = pdfSafeText(line, font);
     const x =
       opts.x ??
       (opts.align === "right"
@@ -195,7 +229,7 @@ class Writer {
           ? MARGIN_L + (BODY_W - font.widthOfTextAtSize(line, size)) / 2
           : MARGIN_L);
     this.ensure(LINE_H(size));
-    this.page.page.drawText(line, { x, y: this.y, size, font, color: opts.color ?? BLACK });
+    drawSafeText(this.page.page, line, { x, y: this.y, size, font, color: opts.color ?? BLACK });
     this.y -= LINE_H(size);
   }
 
@@ -253,7 +287,7 @@ class Writer {
           const part = parts[pi];
           const partWidth = widthsOfParts[pi];
           if (part.image) this.page.page.drawImage(part.image, { x: px, y: ty - size * 0.25, width: partWidth, height: size * 1.2 });
-          else if (part.text) this.page.page.drawText(part.text, { x: px, y: ty, size, font, color: BLACK });
+          else if (part.text) drawSafeText(this.page.page, part.text, { x: px, y: ty, size, font, color: BLACK });
           px += partWidth;
         }
       } else for (const line of lines) {
@@ -264,7 +298,7 @@ class Writer {
             : opts.align === "center"
               ? cx + (cellW - textW) / 2
               : cx + (cellW - textW) / 2;
-        this.page.page.drawText(line, { x: lx, y: ty, size, font, color: BLACK });
+        drawSafeText(this.page.page, line, { x: lx, y: ty, size, font, color: BLACK });
         ty -= lineH;
       }
       cx += cellW;
@@ -288,6 +322,7 @@ class Writer {
   async richText(text: string, images: Map<string, ResolvedImage>, blockId: string, opts: { indent?: number; size?: number; font?: PDFFont; mathIndex?: { value: number } } = {}) {
     const size = opts.size ?? EXAM.font.bodyPt;
     const font = opts.font ?? this.fonts.reg;
+    text = pdfSafeText(text, font);
     const maxW = BODY_W - (opts.indent ?? 0);
     const x0 = MARGIN_L + (opts.indent ?? 0);
     const tokens: Array<{ text: string; image?: ResolvedImage }> = [];
@@ -311,7 +346,7 @@ class Writer {
       if (x + width > x0 + maxW && lineHasContent) newLine();
       this.ensure(LINE_H(size));
       if (embedded) this.page.page.drawImage(embedded, { x, y: this.y - size * 0.25, width, height: size * 1.2 });
-      else if (token.text.trim()) this.page.page.drawText(token.text, { x, y: this.y, size, font, color: BLACK });
+      else if (token.text.trim()) drawSafeText(this.page.page, token.text, { x, y: this.y, size, font, color: BLACK });
       x += width;
       lineHasContent ||= Boolean(token.text.trim() || embedded);
     }
@@ -401,6 +436,13 @@ async function renderBlock(w: Writer, b: ContentBlock, images: Map<string, Resol
       if (Array.isArray(items)) {
         const mc = !ordered && items.length > 0 && items.every((it) => isMcOptionLine(String(it)));
         const mathIndex = { value: 0 };
+        if (mc) {
+          const optionLines = items.reduce(
+            (sum, item) => sum + wrapText(w.fonts.reg, formatMcOption(String(item)), EXAM.font.bodyPt, BODY_W - 20).length,
+            0
+          );
+          w.ensure(optionLines * LINE_H(EXAM.font.bodyPt));
+        }
         for (let i = 0; i < items.length; i++) {
           const raw = String(items[i]);
           const item = mc ? formatMcOption(raw) : raw;
@@ -465,20 +507,40 @@ function drawSourceLine(w: Writer, source: Question["source"]) {
   w.text(text, { font: w.fonts.italic, size: SOURCE_LINE_PT, color: GRAY });
 }
 
-async function renderPaperQuestion(w: Writer, q: Question) {
-  const blocks: ContentBlock[] = [...q.body];
+async function renderPaperQuestion(w: Writer, q: Question, sharedImages?: Map<string, ResolvedImage>) {
+  const questionBody = q.parts.length
+    ? q.body.filter((block) => block.block_type !== "answer_area")
+    : q.body;
+  const blocks: ContentBlock[] = [...questionBody];
   for (const part of q.parts) blocks.push(...part.body);
-  const ids = new Map<string, ResolvedImage>([
+  const ids = sharedImages ?? new Map<string, ResolvedImage>([
     ...(await resolveImages(blocks)),
     ...(await resolveEquations(blocks)),
   ]);
-  await renderQuestionBlocks(w, q, ids, ["body"]);
+  await renderBlocks(w, questionBody, ids);
+  if (q.mcq_options?.length) {
+    const items = q.mcq_options.map((option, i) => {
+      const label = String.fromCharCode(65 + i);
+      const text = option.content.map((block) => String(block.content.text ?? block.content.latex ?? "")).join(" ");
+      return `(${label}) ${text}`;
+    });
+    await renderBlocks(w, [{ block_id: `${q.question_id}-mcq-options`, slot: "body", position: 0, block_type: "list", content: { ordered: false, items } } as ContentBlock], ids);
+  }
   for (const part of q.parts) {
     const label = part.part_label ? `(${part.part_label})` : "";
     const marks = marksLabel(part.marks);
     const head = [label, marks ? `[${marks}]` : ""].filter(Boolean).join("  ");
     if (head) w.text(head, { font: w.fonts.bold, indent: 22 });
     await renderBlocks(w, part.body, ids);
+    if (isWrittenResponseType(q.type_key) && !part.body.some((block) => block.block_type === "answer_area")) {
+      await renderBlocks(w, [{
+        block_id: `${part.question_id}-generated-answer-area`,
+        slot: "body",
+        position: part.body.length,
+        block_type: "answer_area",
+        content: { lines: responseLinesForMarks(part.marks) },
+      }], ids);
+    }
   }
   drawSourceLine(w, q.source);
 }
@@ -488,6 +550,7 @@ export interface PdfOptions {
   courseName: string;
   achievedMarks: number;
   sections: DocSection[];
+  resolvedImages?: Map<string, ResolvedImage>;
 }
 
 async function writeHscCover(w: Writer, plan: ExamPaperPlan) {
@@ -501,19 +564,22 @@ async function writeHscCover(w: Writer, plan: ExamPaperPlan) {
   w.spacer(16);
 
   const idBoxTop = w.y;
-  w.text("Centre Number", { size: EXAM.font.smallPt });
+  w.spacer(8);
+  w.text("Centre Number", { size: EXAM.font.smallPt, indent: 12 });
   w.spacer(14);
-  w.text("Student Number", { size: EXAM.font.smallPt });
+  w.text("Student Number", { size: EXAM.font.smallPt, indent: 12 });
   w.finishBox(idBoxTop);
+  w.spacer(12);
 
   const instrTop = w.y;
+  w.spacer(8);
   for (const line of generalInstructionsLines(plan)) {
     if (line === "General Instructions") {
-      w.text(line, { font: w.fonts.bold, size: EXAM.font.bodyPt });
+      w.text(line, { font: w.fonts.bold, size: EXAM.font.bodyPt, indent: 12 });
     } else if (line === "") {
       w.spacer(6);
     } else {
-      w.text(line, { size: EXAM.font.bodyPt, indent: line.startsWith("Total marks") ? 0 : 12 });
+      w.text(line, { size: EXAM.font.bodyPt, indent: 12 });
     }
   }
   w.finishBox(instrTop);
@@ -533,25 +599,36 @@ async function writeHscCover(w: Writer, plan: ExamPaperPlan) {
 
 function writeSectionHeader(w: Writer, sec: ReturnType<typeof buildExamPaperPlan>["sections"][number]) {
   w.spacer(10);
-  for (const line of sectionOpeningLines(sec)) {
+  const opening = sectionOpeningLines(sec);
+  for (const line of opening) {
     if (line === "") w.spacer(4);
-    else if (line === sec.title) w.text(line, { font: w.fonts.bold, size: EXAM.font.titlePt });
+    else if (line === sec.title) {
+      w.text(line, { font: w.fonts.bold, size: EXAM.font.titlePt });
+      w.rule();
+    }
     else if (line.endsWith(" marks")) w.text(line, { font: w.fonts.bold, size: EXAM.font.bodyPt });
-    else w.text(line, { size: EXAM.font.bodyPt });
+    else {
+      w.text(line, { size: EXAM.font.bodyPt });
+      if (line.startsWith("Allow about ")) w.rule();
+    }
   }
   w.spacer(8);
 }
 
 export async function buildPdfPaper(options: PdfOptions): Promise<Blob> {
   const pdf = await PDFDocument.create();
-  const fonts = {
-    reg: await pdf.embedFont(StandardFonts.TimesRoman),
-    bold: await pdf.embedFont(StandardFonts.TimesRomanBold),
-    italic: await pdf.embedFont(StandardFonts.TimesRomanItalic),
-    mono: await pdf.embedFont(StandardFonts.Courier),
-  };
+  const fonts = await embedUnicodeFonts(pdf);
   const w = new Writer(pdf, fonts);
   const plan = buildExamPaperPlan(options);
+  const allBlocks = options.sections.flatMap((section) => section.questions.flatMap((q) => [
+    ...q.body,
+    ...(q.mcq_options?.length ? [{ block_id: `${q.question_id}-mcq-options`, slot: "body" as const, position: q.body.length, block_type: "list" as const, content: { ordered: false, items: q.mcq_options.map((option, i) => `(${String.fromCharCode(65 + i)}) ${option.content.map((b) => String(b.content.text ?? b.content.latex ?? "")).join(" ")}`) } }] : []),
+    ...q.parts.flatMap((part) => part.body),
+  ]));
+  const sharedImages = options.resolvedImages ?? new Map<string, ResolvedImage>([
+    ...(await resolveImages(allBlocks)),
+    ...(await resolveEquations(allBlocks)),
+  ]);
   await writeHscCover(w, plan);
   w.newPage();
 
@@ -566,14 +643,27 @@ export async function buildPdfPaper(options: PdfOptions): Promise<Blob> {
     writeSectionHeader(w, secPlan);
 
     for (const q of section.questions) {
+      const intro = q.body.find((b) => b.block_type === "text" || b.block_type === "heading");
+      const introText = intro ? contentOf(intro, "text", "") : "";
+      const introLines = typeof introText === "string" && introText
+        ? wrapText(w.fonts.reg, introText, EXAM.font.bodyPt, BODY_W).length
+        : 1;
+      w.ensure((introLines + 1) * LINE_H(EXAM.font.bodyPt) + 8);
       qn += 1;
-      w.ensure(LINE_H(EXAM.font.bodyPt) * 2);
       w.spacer(6);
       const markText = formatMarks(q.marks);
       const headerY = w.y;
       w.textLine(`Question ${qn}`, { font: w.fonts.bold, size: EXAM.font.bodyPt });
       w.drawMarks(markText, headerY);
-      await renderPaperQuestion(w, q);
+      await renderPaperQuestion(w, q, sharedImages);
+      if ((q.type_key ?? "").toLowerCase() !== "multiple_choice" && !(q.parts.length && isWrittenResponseType(q.type_key))) {
+        const lineCount = Math.max(0, Math.floor((q.marks ?? 0) * 3 + 2));
+        for (let i = 0; i < lineCount; i++) {
+          w.ensure(LINE_H(EXAM.font.bodyPt));
+          w.page.page.drawLine({ start: { x: MARGIN_L, y: w.y - 3 }, end: { x: MARGIN_L + BODY_W, y: w.y - 3 }, thickness: 0.45, color: HR });
+          w.y -= LINE_H(EXAM.font.bodyPt);
+        }
+      }
       w.spacer(10);
     }
   }
@@ -584,12 +674,7 @@ export async function buildPdfPaper(options: PdfOptions): Promise<Blob> {
 
 export async function buildPdfSolutions(options: PdfOptions): Promise<Blob> {
   const pdf = await PDFDocument.create();
-  const fonts = {
-    reg: await pdf.embedFont(StandardFonts.TimesRoman),
-    bold: await pdf.embedFont(StandardFonts.TimesRomanBold),
-    italic: await pdf.embedFont(StandardFonts.TimesRomanItalic),
-    mono: await pdf.embedFont(StandardFonts.Courier),
-  };
+  const fonts = await embedUnicodeFonts(pdf);
   const w = new Writer(pdf, fonts);
   w.spacer(48);
   w.text(`Marking guidelines — ${options.title}`, { font: w.fonts.bold, size: EXAM.font.coverTitlePt, align: "center" });
@@ -623,7 +708,7 @@ export async function buildPdfSolutions(options: PdfOptions): Promise<Blob> {
         w.spacer(4);
       }
       if (criteria.supplementary.length) {
-        const ids = new Map<string, ResolvedImage>([
+        const ids = options.resolvedImages ?? new Map<string, ResolvedImage>([
           ...(await resolveImages(q.marking_criteria)),
           ...(await resolveEquations(q.marking_criteria)),
         ]);
@@ -632,7 +717,7 @@ export async function buildPdfSolutions(options: PdfOptions): Promise<Blob> {
 
       if (q.answer.length) {
         w.text("Answer", { font: w.fonts.italic, size: 10, color: GRAY });
-        const ids = new Map<string, ResolvedImage>([
+        const ids = options.resolvedImages ?? new Map<string, ResolvedImage>([
           ...(await resolveImages(q.answer.concat(q.body))),
           ...(await resolveEquations(q.answer.concat(q.body))),
         ]);
@@ -640,7 +725,7 @@ export async function buildPdfSolutions(options: PdfOptions): Promise<Blob> {
       }
       if (q.solution.length) {
         w.text("Solution", { font: w.fonts.italic, size: 10, color: GRAY });
-        const ids = new Map<string, ResolvedImage>([
+        const ids = options.resolvedImages ?? new Map<string, ResolvedImage>([
           ...(await resolveImages(q.solution.concat(q.body))),
           ...(await resolveEquations(q.solution.concat(q.body))),
         ]);

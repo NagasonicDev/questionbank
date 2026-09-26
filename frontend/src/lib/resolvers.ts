@@ -69,12 +69,12 @@ export async function resolveImages(
   blocks: ContentBlock[]
 ): Promise<Map<string, ResolvedImage>> {
   const map = new Map<string, ResolvedImage>();
-  for (const b of blocks) {
-    if (!IMAGE_TYPES.has(b.block_type)) continue;
+  await Promise.all(blocks.map(async (b) => {
+    if (!IMAGE_TYPES.has(b.block_type)) return;
     const path = contentOf(b, "asset_path");
-    if (typeof path !== "string" || !path) continue;
+    if (typeof path !== "string" || !path) return;
     const blob = await idb.getAsset(path);
-    if (!blob) continue;
+    if (!blob) return;
     let data = new Uint8Array(await blob.arrayBuffer());
     let mime = blob.type || "image/png";
     let size = await blobPixelSize(blob);
@@ -90,7 +90,7 @@ export async function resolveImages(
       widthPx: size ? size.w : 96,
       heightPx: size ? size.h : 96,
     });
-  }
+  }));
   return map;
 }
 

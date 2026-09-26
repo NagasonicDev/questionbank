@@ -85,6 +85,15 @@ def blocks_by_slot(question: models.Question, slot: str) -> list[models.ContentB
     return sorted([b for b in question.content_blocks if b.slot == slot], key=lambda b: b.position)
 
 
+def _generated_part_answer_lines(question: models.Question, part: models.Question) -> int:
+    if question.type_key not in {"extended_response", "short_response", "short_answer"}:
+        return 0
+    blocks = blocks_by_slot(part, "body")
+    if any(block.block_type == "answer_area" for block in blocks):
+        return 0
+    return max(1, int((part.marks or 0) * 2 + 0.999999))
+
+
 def select_questions_for_marks(
     db, *, course_id: str, node_ids: list[str] | None, type_key: str | None,
     difficulty_min: int | None, difficulty_max: int | None, target_marks: float, shuffle: bool = True,
@@ -92,9 +101,8 @@ def select_questions_for_marks(
     type_keys: list[str] | None = None, difficulties: list[int] | None = None,
 ) -> tuple[list[models.Question], float]:
     """Pick a set of approved, whole (non-part) questions whose marks add up
-    to as close to `target_marks` as possible without exceeding it, unless
-    getting closer requires only a small overshoot (see `tolerance` below) —
-    real test papers rarely land on an exact total otherwise.
+    to the closest reachable total to `target_marks`, preferring not to
+    overshoot when two totals are equally close.
 
     Only questions with a marks value are eligible, since there's nothing to
     sum for a question with no marks recorded.
@@ -102,46 +110,92 @@ def select_questions_for_marks(
     from . import crud  # local import: avoids a circular import at module load time
 
     stmt = crud.apply_question_filters(
-        crud.hydrated_question_query(), course_id=course_id, node_ids=node_ids, type_key=type_key,
+        select(models.Question.question_id, models.Question.marks, models.Question.created_at), course_id=course_id, node_ids=node_ids, type_key=type_key,
         difficulty_min=difficulty_min, difficulty_max=difficulty_max, tag_name=None,
         marks_min=marks_min, marks_max=marks_max,
         type_keys=type_keys, difficulties=difficulties,
     ).where(models.Question.marks.is_not(None))
 
-    candidates = list(db.scalars(stmt).unique().all())
+    candidates = list(db.execute(stmt).all())
     if shuffle:
         random.shuffle(candidates)
     else:
-        candidates.sort(key=lambda q: q.created_at)
+        candidates.sort(key=lambda row: row[2])
 
-    selected: list[models.Question] = []
-    remaining: list[models.Question] = []
-    total = 0.0
+    target_units = max(1, round(target_marks * 100))
+    questions_by_mark: dict[int, list[str]] = {}
+    for question_id, marks, _created_at in candidates:
+        units = max(1, round(marks * 100))
+        questions_by_mark.setdefault(units, []).append(question_id)
 
-    # Pass 1: greedily add anything that fits without going over.
-    for q in candidates:
-        if total + q.marks <= target_marks + 1e-9:
-            selected.append(q)
-            total += q.marks
-        else:
-            remaining.append(q)
+    bundles: list[tuple[int, list[str]]] = []
+    for units, questions in questions_by_mark.items():
+        offset = 0
+        power = 1
+        while offset < len(questions):
+            count = min(power, len(questions) - offset)
+            bundles.append((units * count, questions[offset:offset + count]))
+            offset += count
+            power *= 2
 
-    # Pass 2: if still short, allow a small overshoot to close the gap —
-    # smallest-remaining-question first, capped at ~15% of the target (or at
-    # least 1 mark) so a single huge question can't blow out the total.
-    tolerance = max(1.0, target_marks * 0.15)
-    if remaining and total < target_marks - 1e-9:
-        remaining.sort(key=lambda q: q.marks)
-        for q in remaining:
-            if total >= target_marks - 1e-9:
+    # Questions above the target only need singleton consideration: adding
+    # anything else makes their overshoot worse. Keep the search bounded at 2×target.
+    max_question_units = max((units for units in questions_by_mark if units <= target_units), default=0)
+    limit = target_units + max_question_units
+    reachable = [0]
+    seen = {0}
+    parents: dict[int, tuple[int, int]] = {}
+    best = 0
+    best_distance: int | None = None
+    best_path: list[int] = []
+    for bundle_index, (bundle_marks, bundle_questions) in enumerate(bundles):
+        if len(bundle_questions) == 1:
+            distance = abs(bundle_marks - target_units)
+            if best_distance is None or distance < best_distance or (distance == best_distance and bundle_marks < best):
+                best = bundle_marks
+                best_distance = distance
+                best_path = [bundle_index]
+
+    for bundle_index, (bundle_marks, _) in enumerate(bundles):
+        for previous in reachable.copy():
+            total = previous + bundle_marks
+            if total > limit or total in seen:
+                continue
+            seen.add(total)
+            reachable.append(total)
+            parents[total] = (previous, bundle_index)
+            distance = abs(total - target_units)
+            if best_distance is None or distance < best_distance or (distance == best_distance and total < best):
+                best = total
+                best_distance = distance
+                best_path = [bundle_index]
+                cursor = previous
+                while cursor > 0:
+                    cursor, parent_bundle = parents[cursor]
+                    best_path.append(parent_bundle)
+            if best_distance == 0:
                 break
-            if (total + q.marks) - target_marks <= tolerance:
-                selected.append(q)
-                total += q.marks
+        if best_distance == 0:
+            break
+
+    selected_ids = [question_id for bundle_index in best_path for question_id in bundles[bundle_index][1]]
+    if selected_ids:
+        selected_by_id: dict[str, models.Question] = {}
+        for offset in range(0, len(selected_ids), 500):
+            batch = selected_ids[offset:offset + 500]
+            selected_by_id.update({
+                question.question_id: question
+                for question in db.scalars(
+                    crud.hydrated_question_query().where(models.Question.question_id.in_(batch))
+                ).unique().all()
+            })
+        selected = [selected_by_id[question_id] for question_id in selected_ids]
+    else:
+        selected = []
 
     if shuffle:
-        random.shuffle(selected)  # otherwise pass-2 additions would cluster at the end
-    return selected, total
+        random.shuffle(selected)
+    return selected, sum(q.marks or 0 for q in selected)
 
 
 def select_n_questions(
@@ -390,7 +444,10 @@ def _docx_render_question(doc: Document, number: int, q: models.Question):
         mr.font.color.rgb = GRAY
         header.paragraph_format.tab_stops.add_tab_stop(Inches(6.5), alignment=WD_TAB_ALIGNMENT.RIGHT)
 
-    _docx_render_blocks(doc, blocks_by_slot(q, "body"))
+    question_body = blocks_by_slot(q, "body")
+    if q.children:
+        question_body = [block for block in question_body if block.block_type != "answer_area"]
+    _docx_render_blocks(doc, question_body)
 
     for part in q.children:
         part_p = doc.add_paragraph()
@@ -400,6 +457,11 @@ def _docx_render_question(doc: Document, number: int, q: models.Question):
         if part.marks is not None:
             part_p.add_run(f"  [{part.marks:g} mark{'s' if part.marks != 1 else ''}]").font.size = Pt(9)
         _docx_render_blocks(doc, blocks_by_slot(part, "body"), indent=0.3)
+        for _ in range(_generated_part_answer_lines(q, part)):
+            answer_line = doc.add_paragraph()
+            answer_line.paragraph_format.left_indent = Inches(0.3)
+            answer_line.paragraph_format.space_after = Pt(14)
+            _docx_add_bottom_border(answer_line)
 
     if q.source:
         src_p = doc.add_paragraph()
@@ -697,12 +759,19 @@ def _pdf_render_question(story: list, styles, number: int, q: models.Question):
     header_tbl.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "BOTTOM"), ("ALIGN", (1, 0), (1, 0), "RIGHT")]))
 
     block_story: list = [header_tbl]
-    _pdf_render_blocks(block_story, styles, blocks_by_slot(q, "body"))
+    question_body = blocks_by_slot(q, "body")
+    if q.children:
+        question_body = [block for block in question_body if block.block_type != "answer_area"]
+    _pdf_render_blocks(block_story, styles, question_body)
 
     for part in q.children:
         part_marks = f"  [{part.marks:g} mark{'s' if part.marks != 1 else ''}]" if part.marks is not None else ""
         block_story.append(Paragraph(f"<b>({part.part_label})</b>{part_marks}", styles["BodyIndent"]))
         _pdf_render_blocks(block_story, styles, blocks_by_slot(part, "body"), indent=True)
+        for _ in range(_generated_part_answer_lines(q, part)):
+            answer_line = Table([[""]], colWidths=[6.0 * inch], rowHeights=[0.35 * inch])
+            answer_line.setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.75, colors.HexColor("#999999"))]))
+            block_story.append(answer_line)
 
     if q.source:
         parts_txt = [q.source.name] + ([str(q.source.year)] if q.source.year else [])

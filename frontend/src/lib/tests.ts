@@ -2,7 +2,7 @@ import type { TestFile } from "./db/indexeddb";
 import * as idb from "./db/indexeddb";
 import type { Question } from "../api/types";
 import type { TestSectionResult } from "../api/types";
-import { buildDocxPaper, buildDocxSolutions, type DocSection } from "./docx";
+import { buildDocxPaper, buildDocxSolutions, collectImages, type DocSection } from "./docx";
 import { buildPdfPaper, buildPdfSolutions } from "./pdf";
 
 const urlCache = new Map<string, string>();
@@ -92,6 +92,7 @@ export interface BuildOptions {
   sectionResults: TestSectionResult[];
   achievedMarks: number;
   sections: DocSection[];
+  onProgress?: (progress: { phase: "selecting" | "paper" | "solutions" | "preview" | "saving"; questionCount?: number }) => void;
 }
 
 /**
@@ -101,13 +102,20 @@ export interface BuildOptions {
  */
 export async function buildTestOutputs(options: BuildOptions): Promise<Record<TestFile, Blob>> {
   const { title, courseName, format, sections, achievedMarks } = options;
-  const docOptions = { title, courseName, achievedMarks, sections };
+  const resolvedImages = await collectImages(sections);
+  const docOptions = { title, courseName, achievedMarks, sections, resolvedImages };
+  options.onProgress?.({ phase: "paper", questionCount: options.questions.length });
   const test =
     format === "pdf" ? await buildPdfPaper(docOptions) : await buildDocxPaper(docOptions);
+  options.onProgress?.({ phase: "solutions", questionCount: options.questions.length });
   const solutions =
     format === "pdf"
       ? await buildPdfSolutions(docOptions)
       : await buildDocxSolutions(docOptions);
-  const preview = format === "pdf" ? test : await buildPdfPaper(docOptions);
+  let preview = test;
+  if (format !== "pdf") {
+    options.onProgress?.({ phase: "preview", questionCount: options.questions.length });
+    preview = await buildPdfPaper(docOptions);
+  }
   return { test, solutions, preview };
 }
