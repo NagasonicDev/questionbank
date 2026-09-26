@@ -11,7 +11,9 @@ if not exist "%LOGS_DIR%" mkdir "%LOGS_DIR%"
 rem Get a timestamp for the server log name (locale-safe via PowerShell).
 for /f "usebackq delims=" %%t in (`powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd_HH-mm-ss"`) do set "TS=%%t"
 set "SERVER_LOG=%LOGS_DIR%\server-%TS%.log"
+set "REQUEST_LOG=%LOGS_DIR%\server-%TS%-requests.log"
 set "SETUP_LOG=%LOGS_DIR%\setup.log"
+set "QB_SERVER_LOG=%REQUEST_LOG%"
 
 where node >nul 2>nul
 if errorlevel 1 (
@@ -57,12 +59,13 @@ echo.
 echo Starting the app at http://localhost:8420 ...
 echo (Leave this window open while you use the app. Close it to stop the app.)
 echo (Output is being saved to: %SERVER_LOG%)
+echo (Requests are being logged to: %REQUEST_LOG%)
 echo.
 
 start "" cmd /c "timeout /t 2 /nobreak >nul && start "" http://localhost:8420/questionbank/""
 
 pushd frontend
-call npx vite preview --port 8420 --strictPort >>"%SERVER_LOG%" 2>&1
+call npx vite preview --host 127.0.0.1 --port 8420 --strictPort >>"%SERVER_LOG%" 2>&1
 popd
 
 if errorlevel 1 (

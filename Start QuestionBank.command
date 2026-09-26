@@ -11,6 +11,11 @@ cd "$(dirname "$0")"
 echo "== Local Question Bank =="
 echo
 
+mkdir -p logs
+SERVER_LOG="$(pwd)/logs/server-$(date '+%Y-%m-%d_%H-%M-%S').log"
+REQUEST_LOG="${SERVER_LOG%.log}-requests.log"
+export QB_SERVER_LOG="$REQUEST_LOG"
+
 if ! command -v node >/dev/null 2>&1; then
   echo "Node.js is required but wasn't found on your PATH. Install it from https://nodejs.org and try again."
   exit 1
@@ -32,6 +37,7 @@ echo "Building the frontend (picks up any code changes)..."
 echo
 echo "Starting the app at http://localhost:8420 ..."
 echo "(Leave this window open while you use the app. Close it, or press Ctrl+C, to stop the app.)"
+echo "(Request logs are written as requests complete to: $REQUEST_LOG)"
 echo
 
 ( sleep 1.5
@@ -43,4 +49,4 @@ echo
 ) &
 
 cd frontend
-exec npx vite preview --port 8420 --strictPort
+exec npx vite preview --host 127.0.0.1 --port 8420 --strictPort >>"$SERVER_LOG" 2>&1

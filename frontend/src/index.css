@@ -281,22 +281,9 @@
   border-radius: inherit;
   background: var(--primary);
   transform-origin: left center;
-  animation: ink-rule-draw 1.6s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  animation: ink-rule-draw 1.6s cubic-bezier(0.65, 0, 0.35, 1) infinite alternate;
 }
 
-.ink-rule-nib {
-  position: absolute;
-  top: 50%;
-  left: 0;
-  width: 7px;
-  height: 7px;
-  margin: -3.5px 0 0 -3.5px;
-  border-radius: 1.5px;
-  background: var(--accent-foreground);
-  box-shadow: 0 0 0 4px color-mix(in oklab, var(--accent-foreground) 16%, transparent);
-  transform: rotate(45deg);
-  animation: ink-nib-travel 1.6s cubic-bezier(0.65, 0, 0.35, 1) infinite;
-}
 
 .ink-drops { display: flex; gap: 7px; }
 .ink-drops span {
@@ -317,16 +304,8 @@
   100% { opacity: 0.25; transform: translateY(0); }
 }
 @keyframes ink-rule-draw {
-  0% { transform: scaleX(0); opacity: 1; }
-  55% { transform: scaleX(1); opacity: 1; }
-  85% { transform: scaleX(1); opacity: 0.85; }
-  100% { transform: scaleX(1); opacity: 0; }
-}
-@keyframes ink-nib-travel {
-  0% { left: 0%; opacity: 1; }
-  55% { left: 100%; opacity: 1; }
-  90% { left: 100%; opacity: 0.9; }
-  100% { left: 100%; opacity: 0; }
+  from { transform: scaleX(0); opacity: 1; }
+  to { transform: scaleX(1); opacity: 1; }
 }
 @keyframes ink-drop {
   0%, 100% { opacity: 0.15; transform: translateY(0); }

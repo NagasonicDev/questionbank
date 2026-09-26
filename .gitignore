@@ -3,6 +3,13 @@ frontend/dist/
 frontend/.env
 .DS_Store
 
+# Local assistant config, question banks, and scratch material
+.opencode/
+physics/
+imports/
+exams/
+tmp/
+
 # Local environments, runtime data, and logs
 backend/.venv/
 **/__pycache__/
