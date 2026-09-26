@@ -1,15 +1,20 @@
 import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, Eye } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowLeft, Eye, Pencil } from "lucide-react";
 import { api } from "../api/client";
 import { LoadingState, PageHeader, Panel } from "../components/system";
 import { QuestionSurface } from "../components/QuestionReader";
 import { Button } from "../components/ui/button";
+import { QuestionEditor } from "../components/QuestionEditor";
+import { useCourseConfig } from "../hooks/useCourseConfig";
+import type { Question } from "../api/types";
 
 export function QuestionDetail() {
   const { questionId } = useParams<{ questionId: string }>();
   const [showAnswer, setShowAnswer] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const queryClient = useQueryClient();
 
   const { data: question, isLoading } = useQuery({
     queryKey: ["question", questionId],
@@ -19,6 +24,14 @@ export function QuestionDetail() {
 
   if (isLoading) return <div className="panel grid min-h-64 place-items-center p-8"><LoadingState /></div>;
   if (!question) return <p className="text-sm text-muted-foreground">Question not found.</p>;
+
+  if (isEditing) {
+    return <QuestionEditView question={question} onCancel={() => setIsEditing(false)} onSaved={() => {
+      queryClient.invalidateQueries({ queryKey: ["question", questionId] });
+      queryClient.invalidateQueries({ queryKey: ["questions", question.course_id] });
+      setIsEditing(false);
+    }} />;
+  }
 
   const sourceParts = question.source
     ? [
@@ -37,12 +50,18 @@ export function QuestionDetail() {
         title={`Question ${questionId}`}
         description="Complete question, source record and reviewed solution."
         actions={
-          <Button variant="outline" asChild>
-            <Link to="/browse">
-              <ArrowLeft />
-              Back to browser
-            </Link>
-          </Button>
+          <>
+            <Button variant="outline" onClick={() => setIsEditing(true)}>
+              <Pencil />
+              Edit question
+            </Button>
+            <Button variant="outline" asChild>
+              <Link to="/browse">
+                <ArrowLeft />
+                Back to browser
+              </Link>
+            </Button>
+          </>
         }
       />
 
@@ -115,4 +134,18 @@ export function QuestionDetail() {
       </div>
     </div>
   );
+}
+
+function QuestionEditView({ question, onCancel, onSaved }: {
+  question: Question;
+  onCancel: () => void;
+  onSaved: () => void;
+}) {
+  const { data: config, isLoading } = useCourseConfig(question.course_id);
+
+  if (isLoading || !config) {
+    return <div className="panel grid min-h-64 place-items-center p-8"><LoadingState label="Loading course settings…" /></div>;
+  }
+
+  return <QuestionEditor config={config} existing={question} onCancel={onCancel} onSaved={onSaved} />;
 }

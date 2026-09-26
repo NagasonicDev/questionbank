@@ -175,7 +175,7 @@ class Question(Base):
     )
     source: Mapped["Source | None"] = relationship()
     children: Mapped[list["Question"]] = relationship(
-        back_populates="parent", cascade="all, delete-orphan", order_by="Question.created_at"
+        back_populates="parent", cascade="all, delete-orphan", order_by="Question.part_label"
     )
     parent: Mapped["Question | None"] = relationship(remote_side=[question_id], back_populates="children")
 

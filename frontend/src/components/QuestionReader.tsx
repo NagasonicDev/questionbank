@@ -103,13 +103,36 @@ function Block({ block }: { block: ContentBlock }) {
   }
 }
 
-function BlockList({ blocks }: { blocks: ContentBlock[] }) {
+function BlockList({ blocks, interactiveChoices, selectedChoice, onSelectChoice, submitted, correctChoice }: {
+  blocks: ContentBlock[];
+  interactiveChoices?: boolean;
+  selectedChoice?: string | null;
+  onSelectChoice?: (choice: string) => void;
+  submitted?: boolean;
+  correctChoice?: string | null;
+}) {
   return (
     <div className="space-y-3">
       {[...blocks]
         .sort((a, b) => a.position - b.position)
         .map((b) => (
-          <Block key={b.block_id} block={b} />
+          <div key={b.block_id}>
+            {interactiveChoices && b.block_type === "list" && (b.content.items ?? []).some((item: string) => /^\s*\(?[A-Z]\)?[.)]\s*/i.test(item)) ? (
+              <div className="grid gap-2 sm:grid-cols-2" role="group" aria-label="Answer choices">
+                {(b.content.items ?? []).map((item: string, i: number) => {
+                  const match = String(item).match(/^\s*\(?([A-Z])\)?[.)]\s*(.*)$/i);
+                  const label = match?.[1]?.toUpperCase() ?? String.fromCharCode(65 + i);
+                  const chosen = selectedChoice === label;
+                  const correct = correctChoice === label;
+                  const style = submitted && correct ? "border-green-600 bg-green-100 text-green-950" : submitted && chosen ? "border-red-600 bg-red-100 text-red-950" : chosen ? "border-primary bg-primary/10" : "border-border hover:border-primary/60";
+                  return <button key={i} type="button" disabled={submitted} onClick={() => onSelectChoice?.(label)} className={`flex items-start gap-3 rounded-md border-2 p-3 text-left transition-colors ${style}`}>
+                    <span className="grid size-7 shrink-0 place-items-center rounded-full border font-mono text-xs font-semibold">{label}</span>
+                    <span className="pt-0.5"><MathText text={match?.[2] ?? String(item)} /></span>
+                  </button>;
+                })}
+              </div>
+            ) : <Block block={b} />}
+          </div>
         ))}
     </div>
   );
@@ -127,10 +150,27 @@ export function SourceLine({ source }: { source: Question["source"] }) {
 
 /** Renders a question's body exactly in content order, with source small and
  * secondary underneath. Answer/solution are opt-in reveals, never default. */
-export function QuestionReader({ question }: { question: Question }) {
+export function QuestionReader({ question, selectedChoice, onSelectChoice, submitted }: { question: Question; selectedChoice?: string | null; onSelectChoice?: (choice: string) => void; submitted?: boolean }) {
+  const correctChoice = question.mcq_options?.some((option) => option.is_correct)
+    ? String.fromCharCode(65 + question.mcq_options.findIndex((option) => option.is_correct))
+    : question.answer.map((b) => String(b.content.text ?? "").trim().match(/\b([A-D])\b/i)?.[1]?.toUpperCase()).find(Boolean) ?? null;
+  const structuredChoices = question.mcq_options?.length ? question.mcq_options : null;
   return (
     <article>
-      <BlockList blocks={question.body} />
+      <BlockList blocks={question.body} interactiveChoices={question.type_key === "multiple_choice" && !!onSelectChoice && !structuredChoices} selectedChoice={selectedChoice} onSelectChoice={onSelectChoice} submitted={submitted} correctChoice={correctChoice} />
+      {structuredChoices && <div className="mt-4 grid gap-2 sm:grid-cols-2" role="group" aria-label="Answer choices">
+        {structuredChoices.map((option, i) => {
+          const label = String.fromCharCode(65 + i);
+          const chosen = selectedChoice === label;
+          const correct = correctChoice === label;
+          const style = submitted && correct ? "border-green-600 bg-green-100 text-green-950" : submitted && chosen ? "border-red-600 bg-red-100 text-red-950" : chosen ? "border-primary bg-primary/10" : "border-border hover:border-primary/60";
+          const optionBlocks = option.content.map((block, j) => ({ ...block, block_id: `practice-option-${i}-${j}`, slot: "body" as const, position: j }));
+          return <button key={i} type="button" disabled={submitted} onClick={() => onSelectChoice?.(label)} className={`flex items-start gap-3 rounded-md border-2 p-3 text-left transition-colors ${style}`}>
+            <span className="grid size-7 shrink-0 place-items-center rounded-full border font-mono text-xs font-semibold">{label}</span>
+            <span className="pt-0.5"><BlockList blocks={optionBlocks} /></span>
+          </button>;
+        })}
+      </div>}
 
       <SourceLine source={question.source} />
 
@@ -202,10 +242,14 @@ export function QuestionSurface({
   question,
   submitted = false,
   footer,
+  selectedChoice,
+  onSelectChoice,
 }: {
   question: Question;
   submitted?: boolean;
   footer?: ReactNode;
+  selectedChoice?: string | null;
+  onSelectChoice?: (choice: string) => void;
 }) {
   const num = question.source?.original_question_no;
   const label = num
@@ -223,7 +267,7 @@ export function QuestionSurface({
       </div>
       <article className="question-paper p-6 sm:p-8">
         <p className="mb-5 font-mono text-xs text-muted-foreground">{label}</p>
-        <QuestionReader question={question} />
+        <QuestionReader question={question} selectedChoice={selectedChoice} onSelectChoice={onSelectChoice} submitted={submitted} />
       </article>
       {submitted && <AnswerReveal question={question} />}
       {footer && <div className="border-t border-border px-5 py-4">{footer}</div>}

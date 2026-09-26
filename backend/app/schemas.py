@@ -179,6 +179,12 @@ class AssetOut(BaseModel):
     alt_text: str | None
     caption: str | None
 
+
+class McqOptionOut(BaseModel):
+    position: int
+    content: list[ContentBlockIn]
+    is_correct: bool
+
     class Config:
         from_attributes = True
 
@@ -204,6 +210,7 @@ class QuestionOut(BaseModel):
     node_ids: list[str]
     tags: list[str]
     body: list[ContentBlockOut]
+    mcq_options: list[McqOptionOut] = Field(default_factory=list)
     answer: list[ContentBlockOut]
     solution: list[ContentBlockOut]
     marking_criteria: list[ContentBlockOut]

@@ -1,4 +1,5 @@
 import json
+import random
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func
@@ -139,10 +140,23 @@ def delete_question(question_id: str, db: Session = Depends(get_db)):
     # practice_attempt.question_id and import_question.final_question_id have no
     # ON DELETE clause, so they must be cleared first or the commit fails with
     # "FOREIGN KEY constraint failed" (the ORM has no relationship to cascade).
-    db.query(models.PracticeAttempt).filter_by(question_id=question_id).delete()
-    db.query(models.ImportQuestion).filter_by(final_question_id=question_id).update(
-        {models.ImportQuestion.final_question_id: None}
-    )
+    # Deleting a parent cascades to its parts, so clear references for every
+    # descendant too; otherwise a child's attempt/import record blocks deletion.
+    question_ids = [question_id]
+    pending = [question_id]
+    while pending:
+        parent_id = pending.pop()
+        children = db.scalars(
+            select(models.Question.question_id).where(models.Question.parent_question_id == parent_id)
+        ).all()
+        question_ids.extend(children)
+        pending.extend(children)
+    db.query(models.PracticeAttempt).filter(
+        models.PracticeAttempt.question_id.in_(question_ids)
+    ).delete(synchronize_session=False)
+    db.query(models.ImportQuestion).filter(
+        models.ImportQuestion.final_question_id.in_(question_ids)
+    ).update({models.ImportQuestion.final_question_id: None}, synchronize_session=False)
     db.delete(q)
     db.commit()
 
@@ -212,12 +226,13 @@ def list_questions(
 @router.get("/courses/{course_id}/question-counts", response_model=schemas.QuestionCountsResponse)
 def question_counts(
     course_id: str,
+    node_id: list[str] = Query(default=[]),
     type: list[str] = Query(default=[]),
     difficulty: list[int] = Query(default=[]),
     db: Session = Depends(get_db),
 ):
     base = crud.apply_question_filters(
-        select(models.Question.question_id), course_id=course_id, node_ids=None,
+        select(models.Question.question_id), course_id=course_id, node_ids=node_id or None,
         type_key=None, type_keys=type or None,
         difficulty_min=None, difficulty_max=None, difficulties=difficulty or None,
         tag_name=None,
@@ -230,23 +245,27 @@ def question_counts(
         select(models.QuestionClassification.node_id, models.QuestionClassification.question_id)
         .where(models.QuestionClassification.question_id.in_(matching_ids) if matching_ids else False)
     ).all()
-    counts_by_node: dict[str, int] = {}
+    questions_by_node: dict[str, set[str]] = {}
     for node_id, question_id in classifications:
-        counts_by_node[node_id] = counts_by_node.get(node_id, 0) + 1
+        questions_by_node.setdefault(node_id, set()).add(question_id)
 
     by_parent: dict[str | None, list[models.CourseNode]] = {}
     for n in nodes:
         by_parent.setdefault(n.parent_node_id, []).append(n)
 
-    def build(node: models.CourseNode) -> schemas.NodeCount:
-        children = [build(c) for c in sorted(by_parent.get(node.node_id, []), key=lambda n: n.sort_order)]
-        own = counts_by_node.get(node.node_id, 0)
-        rollup = own + sum(c.count for c in children)
-        return schemas.NodeCount(node_id=node.node_id, name=node.name, level_index=node.level_index,
-                                  count=rollup, children=children)
+    def build(node: models.CourseNode) -> tuple[schemas.NodeCount, set[str]]:
+        child_results = [build(c) for c in sorted(by_parent.get(node.node_id, []), key=lambda n: n.sort_order)]
+        question_ids = set(questions_by_node.get(node.node_id, set()))
+        for _, child_question_ids in child_results:
+            question_ids.update(child_question_ids)
+        result = schemas.NodeCount(
+            node_id=node.node_id, name=node.name, level_index=node.level_index,
+            count=len(question_ids), children=[child for child, _ in child_results],
+        )
+        return result, question_ids
 
     roots = sorted(by_parent.get(None, []), key=lambda n: n.sort_order)
-    by_node = [build(r) for r in roots]
+    by_node = [build(r)[0] for r in roots]
 
     by_type: dict[str, int] = {}
     by_difficulty: dict[str, int] = {}
@@ -295,12 +314,14 @@ def random_question(
         )
         base = base.where(models.Question.question_id.not_in(recent))
 
-    matching_ids = db.scalars(base).all()
-    matching_count = len(matching_ids)
-    if not matching_ids:
+    matching_count = db.scalar(select(func.count()).select_from(base.order_by(None).subquery())) or 0
+    if not matching_count:
         return schemas.RandomQuestionResponse(matching_count=0, question=None)
 
-    chosen_id = db.scalar(select(models.Question.question_id).where(
-        models.Question.question_id.in_(matching_ids)).order_by(func.random()).limit(1))
+    chosen_id = db.scalar(
+        base.order_by(models.Question.question_id)
+        .offset(random.randrange(matching_count))
+        .limit(1)
+    )
     q = db.scalar(_question_query().where(models.Question.question_id == chosen_id))
     return schemas.RandomQuestionResponse(matching_count=matching_count, question=crud.question_to_out(q))

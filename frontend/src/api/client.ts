@@ -13,6 +13,7 @@ import type {
   QuestionListResponse,
   RandomQuestionResponse,
   Source,
+  InstitutionYearFilter,
   TestSectionInput,
 } from "./types";
 
@@ -123,9 +124,17 @@ export const api = {
 
   listQuestions(
     courseId: string,
-    filters: { node_id?: string | string[]; type?: string | string[]; difficulty?: string | number | Array<string | number>; tag?: string; q?: string; sort?: string; page?: number; page_size?: number } = {}
+    filters: { node_id?: string | string[]; type?: string | string[]; difficulty?: string | number | Array<string | number>; tag?: string; q?: string; sort?: string; page?: number; page_size?: number; source_filters?: InstitutionYearFilter[] } = {}
   ): Promise<QuestionListResponse> {
     return data.listQuestions(courseId, filters);
+  },
+
+  questionSourceOptions(courseId: string): Promise<{ institutions: Array<{ name: string; years: number[] }> }> {
+    return data.questionSourceOptions(courseId);
+  },
+
+  renameInstitution(courseId: string, currentName: string, nextName: string): Promise<number> {
+    return data.renameInstitution(courseId, currentName, nextName);
   },
 
   async getQuestion(id: string): Promise<Question> {
@@ -149,9 +158,18 @@ export const api = {
 
   questionCounts(
     courseId: string,
-    opts: { type?: string; difficulty?: string } = {}
+    opts: {
+      type?: string | string[];
+      difficulty?: string | number;
+      difficulties?: Array<string | number>;
+      node_ids?: string[];
+    } = {}
   ): Promise<QuestionCountsResponse> {
     return data.questionCounts(courseId, opts);
+  },
+
+  estimateTestSections(courseId: string, sections: TestSectionInput[]): Promise<Array<{ question_count: number; available_marks: number }>> {
+    return data.estimateTestSections(courseId, sections);
   },
 
   randomQuestion(params: {
@@ -162,6 +180,7 @@ export const api = {
     tag?: string;
     exclude_question_ids?: Array<string | number>;
     exclude_recent_days?: number;
+    source_filters?: InstitutionYearFilter[];
   }): Promise<RandomQuestionResponse> {
     return data.randomQuestion(params).then((r) => registerRandom(r));
   },
@@ -192,6 +211,8 @@ export const api = {
       format: "docx" | "pdf";
       shuffle?: boolean;
       sections: TestSectionInput[];
+      selectionTimeoutMs?: number;
+      onProgress?: (progress: { phase: "selecting" | "hydrating" | "paper" | "solutions" | "preview" | "saving"; questionCount?: number }) => void;
     }
   ): Promise<GeneratedTestMeta> {
     return data.generateTest(courseId, payload);

@@ -95,10 +95,11 @@ addition to `answer`/`solution` if the source provides them):
 - If the source document already gives marking criteria (a rubric, a mark
   scheme, "1 mark for X, 1 mark for Y"), use it as given, reworded into the
   block format below if needed.
-- **If the source gives no marking criteria, construct one yourself**, using
-  the question's marks value, difficulty, and course context (topic/dot
-  point) to reason about what a response needs to demonstrate to earn each
-  mark. For example, a 3-mark short-answer question might earn "1 mark for
+- **If the exam document gives no marking criteria, create them yourself**
+  for every question or part, using the question wording, its marks value,
+  difficulty, and course context (topic/dot point) to decide what a response
+  must demonstrate to earn each mark. For example, a 3-mark short-answer
+  question might earn "1 mark for
   correctly identifying X; 1 mark for the correct method; 1 mark for the
   correct final answer with appropriate units."
 - **Do not write a full worked exemplar answer or model solution as the
@@ -155,6 +156,34 @@ Produce **one JSON file** (e.g. `import.json`) shaped like this:
 }}
 ```
 
+## Multiple-choice questions
+
+For every question whose `type_key` is `multiple_choice`, keep the question
+stem in `body` and put answer choices in a separate `mcq_options` array. Do
+not put choices in a body list. Keep stem blocks in the order they appear on
+the page, and keep options in their printed order (A, B, C, D). Each option
+has a `content` array of normal content blocks and an `is_correct` boolean.
+Use inline LaTeX for math in option text. Mark exactly one option correct
+when the source establishes the answer; also set `answer` to its letter (for
+example, `C`). If the source does not establish the answer, set every
+`is_correct` to `false` and leave `answer` empty rather than guessing.
+Preserve diagrams, tables, and equations in the stem or option content where
+they occur. Do not create question parts for the choices.
+
+Example:
+
+```json
+{{
+  "type_key": "multiple_choice",
+  "body": [{{"block_type": "text", "content": {{"text": "What is the temperature?"}}}}],
+  "mcq_options": [
+    {{"content": [{{"block_type": "text", "content": {{"text": "$1.6\\\\times10^12$ K"}}}}], "is_correct": false}},
+    {{"content": [{{"block_type": "text", "content": {{"text": "$5.2\\\\times10^3$ K"}}}}], "is_correct": true}}
+  ],
+  "answer": [{{"block_type": "text", "content": {{"text": "B"}}}}]
+}}
+```
+
 See `import-schema.json` (packaged alongside this file) for this course's
 actual valid `node_ids`, `type_key` values, and difficulty range
 ({diff_range or "as configured"}) — every `node_ids` entry in your output
@@ -175,8 +204,17 @@ for upright SI units. Example choice: `"(A) $5.4\\times10^{14}\\,\\mathrm{Hz}$"`
 
 - Multi-part questions: emit one question object for the shared stem, with
   a `parts` array of `{{"part_label": "a", "marks": ..., "body": [...],
-  "marking_criteria": [...]}}` objects — do not split them into unrelated
-  top-level questions.
+  "marking_criteria": [...]}}` objects in the same order as the source — do
+  not split them into unrelated top-level questions.
+- For multi-part `extended_response`, `short_response`, or `short_answer`
+  questions, include an `answer_area` block at the end of each part's `body`
+  so answer lines appear immediately after that part. Set `content.lines` to
+  two lines per mark (round fractional results up, with at least one line),
+  based on that part's `marks`; for example, a 2-mark part gets
+  `{"block_type":"answer_area","content":{"lines":4}}`. Do not put one
+  long answer area on the shared parent question. Leave answer areas off
+  multiple-choice parts and parts whose source already provides a specific
+  answer space.
 - If a question spans multiple valid nodes, list all of them in `node_ids`
   (only if the course allows multiple classification — see below).
 - If you cannot confidently classify a question at all, still include it,
@@ -201,6 +239,11 @@ def build_skill_zip(config: schemas.CourseFullConfig, instructions_markdown: str
         "allow_multi_classification": config.allow_multi_classification,
         "valid_node_ids": _flatten_nodes(config.nodes),
         "valid_tags": config.tags,
+        "mcq_option_format": {
+            "content": "array of content blocks, same block format as body",
+            "is_correct": "boolean; mark exactly one true when the answer is known",
+            "order": "array order is the printed choice order; labels A, B, C... are implicit",
+        },
         "example_question": {
             "type_key": config.question_types[0] if config.question_types else "short_answer",
             "difficulty": config.difficulty_levels[0].level if config.difficulty_levels else None,
@@ -222,6 +265,15 @@ def build_skill_zip(config: schemas.CourseFullConfig, instructions_markdown: str
             ],
             "classification_confidence": "high",
             "source": {"name": "Example Source", "year": 2025, "original_question_no": "1"},
+        },
+        "example_multiple_choice": {
+            "type_key": "multiple_choice",
+            "body": [{"block_type": "text", "content": {"text": "What is the temperature?"}}],
+            "mcq_options": [
+                {"content": [{"block_type": "text", "content": {"text": "$1.6\\times10^12$ K"}}], "is_correct": False},
+                {"content": [{"block_type": "text", "content": {"text": "$5.2\\times10^3$ K"}}], "is_correct": True},
+            ],
+            "answer": [{"block_type": "text", "content": {"text": "B"}}],
         },
     }
 

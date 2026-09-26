@@ -1,20 +1,62 @@
 import { useState, type FormEvent } from "react";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Plus, Trash2 } from "lucide-react";
 import { api } from "../api/client";
-import { NodeTree } from "./NodeTree";
+import { ToggleButton } from "./FilterMenu";
 import { BlockEditor, blocksToPayload, emptyBlock, type EditableBlock } from "./BlockEditor";
-import type { CourseFullConfig, ContentBlock, Question } from "../api/types";
+import type { CourseFullConfig, ContentBlock, CourseNode, Question } from "../api/types";
 import { Field, Panel, PanelHead } from "./system";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { Switch } from "./ui/switch";
+import { Checkbox } from "./ui/checkbox";
+
+interface EditableOption {
+  blocks: EditableBlock[];
+  isCorrect: boolean;
+}
+
+interface EditablePart {
+  questionId?: string;
+  label: string;
+  marks: string;
+  body: EditableBlock[];
+  answer: EditableBlock[];
+  solution: EditableBlock[];
+  markingCriteria: EditableBlock[];
+}
 
 function toEditable(blocks: ContentBlock[]): EditableBlock[] {
   return blocks
     .slice()
     .sort((a, b) => a.position - b.position)
     .map((b) => ({ tempId: b.block_id, block_type: b.block_type, content: b.content }));
+}
+
+function descendantIds(node: CourseNode): string[] {
+  return node.children.flatMap((child) => [child.node_id, ...descendantIds(child)]);
+}
+
+function renderClassification(nodes: CourseNode[], selected: Set<string>, onToggle: (id: string) => void) {
+  return nodes.map((node) => {
+    const selectedBelow = node.children.some((child) =>
+      selected.has(child.node_id) || descendantIds(child).some((id) => selected.has(id))
+    );
+    const checked = selected.has(node.node_id);
+    return (
+      <div key={node.node_id} className="space-y-2">
+        <ToggleButton enabled={checked} onClick={() => onToggle(node.node_id)}>
+          {node.code && <span className="mr-1 font-mono text-[11px] text-muted-foreground">{node.code}</span>}
+          <span className="whitespace-normal break-words">{node.name}</span>
+        </ToggleButton>
+        {node.children.length > 0 && (checked || selectedBelow) && (
+          <div className="ml-3 space-y-2 border-l border-border pl-3 sm:ml-5 sm:pl-4">
+            {renderClassification(node.children, selected, onToggle)}
+          </div>
+        )}
+      </div>
+    );
+  });
 }
 
 interface QuestionEditorProps {
@@ -44,6 +86,22 @@ export function QuestionEditor({ config, existing, onSaved, onCancel }: Question
   const [markingCriteria, setMarkingCriteria] = useState<EditableBlock[]>(
     existing ? toEditable(existing.marking_criteria) : []
   );
+  const [options, setOptions] = useState<EditableOption[]>(existing?.mcq_options?.map((option) => ({
+    blocks: option.content.map((block, i) => ({ tempId: `option-${option.position}-${i}`, block_type: block.block_type, content: block.content })),
+    isCorrect: option.is_correct,
+  })) ?? (typeKey === "multiple_choice" ? [
+    { blocks: [emptyBlock("text")], isCorrect: false },
+    { blocks: [emptyBlock("text")], isCorrect: false },
+  ] : []));
+  const [parts, setParts] = useState<EditablePart[]>(existing?.parts.map((part) => ({
+    questionId: part.question_id,
+    label: part.part_label ?? "",
+    marks: part.marks?.toString() ?? "",
+    body: toEditable(part.body),
+    answer: toEditable(part.answer),
+    solution: toEditable(part.solution),
+    markingCriteria: toEditable(part.marking_criteria),
+  })) ?? []);
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -53,6 +111,16 @@ export function QuestionEditor({ config, existing, onSaved, onCancel }: Question
       const next = new Set(prev);
       if (next.has(nodeId)) {
         next.delete(nodeId);
+        const dropDescendants = (nodes: CourseNode[]): void => {
+          for (const node of nodes) {
+            if (node.node_id === nodeId) {
+              descendantIds(node).forEach((id) => next.delete(id));
+              return;
+            }
+            dropDescendants(node.children);
+          }
+        };
+        dropDescendants(config.nodes);
       } else {
         next.add(nodeId);
       }
@@ -75,6 +143,20 @@ export function QuestionEditor({ config, existing, onSaved, onCancel }: Question
         answer: blocksToPayload(answer),
         solution: blocksToPayload(solution),
         marking_criteria: blocksToPayload(markingCriteria),
+        mcq_options: typeKey === "multiple_choice" ? options.map((option) => ({
+          content: blocksToPayload(option.blocks),
+          is_correct: option.isCorrect,
+        })) : [],
+        parts: parts.map((part) => ({
+          question_id: part.questionId,
+          type_key: typeKey,
+          part_label: part.label,
+          marks: part.marks ? Number(part.marks) : null,
+          body: blocksToPayload(part.body),
+          answer: blocksToPayload(part.answer),
+          solution: blocksToPayload(part.solution),
+          marking_criteria: blocksToPayload(part.markingCriteria),
+        })),
         review_status: reviewStatus,
       };
 
@@ -110,6 +192,21 @@ export function QuestionEditor({ config, existing, onSaved, onCancel }: Question
             <h2 className="font-display text-2xl font-semibold">{existing ? "Edit question" : "New question"}</h2>
           </div>
         </div>
+
+        <Panel>
+          <div className="p-5">
+            <Field label={`Classification — ${config.name} · ${config.hierarchy.map((l) => l.label).join(" / ")}`}>
+              <div className="mt-2 max-h-[32rem] overflow-y-auto rounded-md border border-border p-3 sm:p-4">
+                <div className="space-y-2">{renderClassification(config.nodes, nodeIds, toggleNode)}</div>
+              </div>
+              {config.nodes.length === 0 && (
+                <p className="mt-2 text-xs italic text-muted-foreground">
+                  No categories yet — add some under the Structure tab first.
+                </p>
+              )}
+            </Field>
+          </div>
+        </Panel>
 
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_280px]">
           <div className="space-y-5">
@@ -157,24 +254,48 @@ export function QuestionEditor({ config, existing, onSaved, onCancel }: Question
             <BlockEditor label="Answer" blocks={answer} onChange={setAnswer} />
             <BlockEditor label="Solution / working" blocks={solution} onChange={setSolution} />
             <BlockEditor label="Marking criteria" blocks={markingCriteria} onChange={setMarkingCriteria} />
+            {typeKey === "multiple_choice" && (
+              <Panel>
+                <PanelHead title="Answer choices" action={<Button type="button" variant="outline" size="sm" onClick={() => setOptions((items) => [...items, { blocks: [emptyBlock("text")], isCorrect: false }])}><Plus /> Add choice</Button>} />
+                <div className="space-y-4 p-5">
+                  {options.map((option, index) => (
+                    <div key={index} className="rounded-md border border-border p-4">
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2">
+                          <Checkbox checked={option.isCorrect} onCheckedChange={(checked) => setOptions((items) => items.map((item, i) => ({ ...item, isCorrect: i === index ? checked === true : false })))} aria-label={`Mark choice ${String.fromCharCode(65 + index)} as correct`} />
+                          <span className="text-sm font-medium">Choice {String.fromCharCode(65 + index)} {option.isCorrect ? "· Correct answer" : ""}</span>
+                        </div>
+                        <Button type="button" variant="ghost" size="icon" aria-label={`Remove choice ${String.fromCharCode(65 + index)}`} onClick={() => setOptions((items) => items.filter((_, i) => i !== index))}><Trash2 /></Button>
+                      </div>
+                      <BlockEditor label={`Choice ${String.fromCharCode(65 + index)} content`} blocks={option.blocks} onChange={(blocks) => setOptions((items) => items.map((item, i) => i === index ? { ...item, blocks } : item))} />
+                    </div>
+                  ))}
+                  {options.length === 0 && <p className="text-sm text-muted-foreground">Add answer choices for this multiple choice question.</p>}
+                </div>
+              </Panel>
+            )}
+            <Panel>
+              <PanelHead title="Question parts" action={<Button type="button" variant="outline" size="sm" onClick={() => setParts((items) => [...items, { label: String.fromCharCode(97 + items.length), marks: "", body: [emptyBlock("text")], answer: [], solution: [], markingCriteria: [] }])}><Plus /> Add part</Button>} />
+              <div className="space-y-5 p-5">
+                {parts.map((part, index) => (
+                  <div key={part.questionId ?? `new-${index}`} className="space-y-4 rounded-md border border-border p-4">
+                    <div className="grid grid-cols-[1fr_1fr_auto] items-end gap-3">
+                      <Field label="Part label"><Input value={part.label} onChange={(e) => setParts((items) => items.map((item, i) => i === index ? { ...item, label: e.target.value } : item))} placeholder="a" /></Field>
+                      <Field label="Marks"><Input type="number" step="0.5" value={part.marks} onChange={(e) => setParts((items) => items.map((item, i) => i === index ? { ...item, marks: e.target.value } : item))} /></Field>
+                      <Button type="button" variant="ghost" size="icon" aria-label={`Remove part ${part.label || index + 1}`} onClick={() => setParts((items) => items.filter((_, i) => i !== index))}><Trash2 /></Button>
+                    </div>
+                    <BlockEditor label={`Part ${part.label || index + 1} question`} blocks={part.body} onChange={(body) => setParts((items) => items.map((item, i) => i === index ? { ...item, body } : item))} />
+                    <BlockEditor label={`Part ${part.label || index + 1} answer`} blocks={part.answer} onChange={(answer) => setParts((items) => items.map((item, i) => i === index ? { ...item, answer } : item))} />
+                    <BlockEditor label={`Part ${part.label || index + 1} solution`} blocks={part.solution} onChange={(solution) => setParts((items) => items.map((item, i) => i === index ? { ...item, solution } : item))} />
+                    <BlockEditor label={`Part ${part.label || index + 1} marking criteria`} blocks={part.markingCriteria} onChange={(markingCriteria) => setParts((items) => items.map((item, i) => i === index ? { ...item, markingCriteria } : item))} />
+                  </div>
+                ))}
+                {parts.length === 0 && <p className="text-sm text-muted-foreground">Add parts to create a multi-part question.</p>}
+              </div>
+            </Panel>
           </div>
 
           <div className="space-y-5">
-            <Panel>
-              <div className="p-5">
-                <Field label={`Classification — ${config.hierarchy.map((l) => l.label).join(" / ")}`}>
-                  <div className="mt-2 max-h-64 overflow-y-auto rounded-md border border-border p-2">
-                    <NodeTree nodes={config.nodes} selectedIds={nodeIds} onToggle={toggleNode} />
-                  </div>
-                  {config.nodes.length === 0 && (
-                    <p className="mt-2 text-xs italic text-muted-foreground">
-                      No categories yet — add some under the Structure tab first.
-                    </p>
-                  )}
-                </Field>
-              </div>
-            </Panel>
-
             <Panel>
               <PanelHead title="Tags" />
               <div className="p-5">

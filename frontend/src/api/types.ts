@@ -67,6 +67,11 @@ export interface Source {
   original_question_no: string | null;
 }
 
+export interface InstitutionYearFilter {
+  institution: string;
+  years: number[];
+}
+
 export interface Asset {
   asset_id: string;
   file_path: string;
@@ -91,6 +96,7 @@ export interface Question {
   node_ids: string[];
   tags: string[];
   body: ContentBlock[];
+  mcq_options?: Array<{ position: number; content: Array<{ block_type: BlockType; content: Record<string, any> }>; is_correct: boolean }>;
   answer: ContentBlock[];
   solution: ContentBlock[];
   marking_criteria: ContentBlock[];
@@ -153,7 +159,7 @@ export interface TestSectionInput {
   type_key?: string | null;
   type_keys?: string[];
   difficulties?: Array<number | string>;
-  count?: number | null;
+  source_filters?: InstitutionYearFilter[];
   marks?: number | null;
 }
 
@@ -163,6 +169,7 @@ export interface TestSectionResult {
   marks: number;
   count_requested: number | null;
   marks_requested: number | null;
+  selection_limited?: boolean;
 }
 
 export interface GeneratedTestMeta {

@@ -1,4 +1,4 @@
-import { all, getFirst, run, runMany } from "./db/sqlite";
+import { all, getFirst, run, runMany, transaction } from "./db/sqlite";
 import { newId, nowUtc } from "./id";
 import { deleteAssetBlob, finalizeQuestionAssets } from "./assets";
 import { buildTestOutputs, deleteTestOutputs, ensureTestFileUrl, storeTestFiles } from "./tests";
@@ -379,6 +379,7 @@ interface FilterOptions {
   nodeIds?: string[];
   tag?: string;
   q?: string;
+  institutionYears?: Array<{ institution: string; years: number[] }>;
 }
 
 function buildFilters(opts: FilterOptions): { where: string[]; params: any[] } {
@@ -389,6 +390,19 @@ function buildFilters(opts: FilterOptions): { where: string[]; params: any[] } {
   }
   if (opts.wholeQuestions) {
     where.push("q.parent_question_id IS NULL");
+  }
+  if (opts.institutionYears?.length) {
+    const clauses: string[] = [];
+    for (const selection of opts.institutionYears) {
+      if (selection.years.length) {
+        clauses.push(`(q.source_id IN (SELECT source_id FROM source WHERE COALESCE(NULLIF(TRIM(institution), ''), TRIM(name)) = ? AND year IN (${selection.years.map(() => "?").join(", ")})))`);
+        params.push(selection.institution, ...selection.years);
+      } else {
+        clauses.push("(q.source_id IN (SELECT source_id FROM source WHERE COALESCE(NULLIF(TRIM(institution), ''), TRIM(name)) = ?))");
+        params.push(selection.institution);
+      }
+    }
+    where.push(`(${clauses.join(" OR ")})`);
   }
   if (opts.typeKey !== undefined && opts.typeKey !== null && opts.typeKey !== "") {
     const keys = Array.isArray(opts.typeKey) ? opts.typeKey : [opts.typeKey];
@@ -523,6 +537,10 @@ export async function questionToOut(q: SqlRow, includeParts: boolean): Promise<Q
       ? getFirst<SqlRow>("SELECT * FROM source WHERE source_id = ?", [q.source_id])
       : Promise.resolve(null),
   ]);
+  const mcqRows = await all<SqlRow>(
+    "SELECT position, content_json, is_correct FROM mcq_option WHERE question_id = ? ORDER BY position ASC",
+    [q.question_id]
+  );
   const sourceOut: Source | null =
     source && source.name
       ? {
@@ -537,7 +555,7 @@ export async function questionToOut(q: SqlRow, includeParts: boolean): Promise<Q
   let parts: Question[] = [];
   if (includeParts) {
     const childRows = await all<SqlRow>(
-      "SELECT * FROM question WHERE parent_question_id = ? ORDER BY created_at ASC, question_id",
+      "SELECT * FROM question WHERE parent_question_id = ? ORDER BY part_label COLLATE NOCASE ASC, question_id",
       [q.question_id]
     );
     for (const child of childRows) {
@@ -558,6 +576,17 @@ export async function questionToOut(q: SqlRow, includeParts: boolean): Promise<Q
     node_ids: nodeRows.map((r) => r.node_id),
     tags: tagRows.map((r) => r.name),
     body: slotOf("body"),
+    mcq_options: mcqRows.map((row) => ({
+      position: Number(row.position),
+      content: JSON.parse(String(row.content_json)).map((block: any, i: number) => ({
+        block_id: `option-${q.question_id}-${row.position}-${i}`,
+        slot: "body" as const,
+        position: i,
+        block_type: block.block_type,
+        content: block.content ?? {},
+      })),
+      is_correct: Boolean(row.is_correct),
+    })),
     answer: slotOf("answer"),
     solution: slotOf("solution"),
     marking_criteria: slotOf("marking_criteria"),
@@ -581,6 +610,116 @@ async function hydrateQuestion(questionId: string): Promise<Question> {
   const q = await getFirst<SqlRow>("SELECT * FROM question WHERE question_id = ?", [questionId]);
   if (!q) throw new Error("Question not found");
   return questionToOut(q, true);
+}
+
+async function hydrateQuestions(questionIds: string[]): Promise<Question[]> {
+  if (!questionIds.length) return [];
+  const queryInBatches = async (ids: string[], sql: (placeholders: string) => string) => {
+    const rows: SqlRow[] = [];
+    for (let offset = 0; offset < ids.length; offset += 400) {
+      const batch = ids.slice(offset, offset + 400);
+      rows.push(...await all<SqlRow>(sql(`(${batch.map(() => "?").join(",")})`), batch));
+    }
+    return rows;
+  };
+  const roots = await queryInBatches(
+    questionIds,
+    (inClause) => `SELECT * FROM question WHERE question_id IN ${inClause}`
+  );
+  const children = await queryInBatches(
+    questionIds,
+    (inClause) => `SELECT * FROM question WHERE parent_question_id IN ${inClause} ORDER BY parent_question_id, part_label COLLATE NOCASE ASC, question_id`
+  );
+  const allQuestions = [...roots, ...children];
+  const relatedIds = [...new Set(allQuestions.map((q) => String(q.question_id)))];
+  const sourceIds = [...new Set(allQuestions.map((q) => q.source_id).filter((id): id is string => !!id))];
+  const [blocks, nodes, tags, assets, mcqRows, sources] = await Promise.all([
+    queryInBatches(relatedIds, (inClause) => `SELECT * FROM content_block WHERE question_id IN ${inClause} ORDER BY question_id, position`),
+    queryInBatches(relatedIds, (inClause) => `SELECT question_id, node_id FROM question_classification WHERE question_id IN ${inClause}`),
+    queryInBatches(relatedIds, (inClause) => `SELECT qt.question_id, t.name FROM tag t JOIN question_tag qt ON qt.tag_id = t.tag_id WHERE qt.question_id IN ${inClause} ORDER BY qt.question_id, t.name`),
+    queryInBatches(relatedIds, (inClause) => `SELECT * FROM asset WHERE question_id IN ${inClause}`),
+    queryInBatches(relatedIds, (inClause) => `SELECT question_id, position, content_json, is_correct FROM mcq_option WHERE question_id IN ${inClause} ORDER BY question_id, position`),
+    queryInBatches(sourceIds, (inClause) => `SELECT * FROM source WHERE source_id IN ${inClause}`),
+  ]);
+  const groupBy = (rows: SqlRow[], field: string) => {
+    const grouped = new Map<string, SqlRow[]>();
+    for (const row of rows) {
+      const key = String(row[field]);
+      const group = grouped.get(key) ?? [];
+      group.push(row);
+      grouped.set(key, group);
+    }
+    return grouped;
+  };
+  const blocksByQuestion = groupBy(blocks, "question_id");
+  const nodesByQuestion = groupBy(nodes, "question_id");
+  const tagsByQuestion = groupBy(tags, "question_id");
+  const assetsByQuestion = groupBy(assets, "question_id");
+  const mcqByQuestion = groupBy(mcqRows, "question_id");
+  const sourcesById = groupBy(sources, "source_id");
+  const childrenByParent = groupBy(children, "parent_question_id");
+  const toQuestion = (q: SqlRow, includeParts: boolean): Question => {
+    const id = String(q.question_id);
+    const questionBlocks = blocksByQuestion.get(id) ?? [];
+    const slotOf = (slot: string) => questionBlocks.filter((block) => block.slot === slot).map(blockOut);
+    const sourceRows = q.source_id ? sourcesById.get(String(q.source_id)) ?? [] : [];
+    const source = sourceRows.length
+      ? {
+          name: sourceRows[0].name,
+          year: sourceRows[0].year ?? null,
+          institution: sourceRows[0].institution ?? null,
+          original_question_no: sourceRows[0].original_question_no ?? null,
+        }
+      : null;
+    return {
+      question_id: id,
+      course_id: q.course_id,
+      type_key: q.type_key,
+      difficulty: q.difficulty ?? null,
+      marks: q.marks ?? null,
+      parent_question_id: q.parent_question_id ?? null,
+      part_label: q.part_label ?? null,
+      notes: q.notes ?? null,
+      review_status: q.review_status,
+      classification_confidence: q.classification_confidence ?? null,
+      node_ids: (nodesByQuestion.get(id) ?? []).map((row) => row.node_id),
+      tags: (tagsByQuestion.get(id) ?? []).map((row) => row.name),
+      body: slotOf("body"),
+      mcq_options: (mcqByQuestion.get(id) ?? []).map((row) => ({
+        position: Number(row.position),
+        content: JSON.parse(String(row.content_json)).map((block: any, i: number) => ({
+          block_id: `option-${id}-${row.position}-${i}`,
+          slot: "body" as const,
+          position: i,
+          block_type: block.block_type,
+          content: block.content ?? {},
+        })),
+        is_correct: boolFrom(row, "is_correct"),
+      })),
+      answer: slotOf("answer"),
+      solution: slotOf("solution"),
+      marking_criteria: slotOf("marking_criteria"),
+      assets: (assetsByQuestion.get(id) ?? []).map((asset) => ({
+        asset_id: asset.asset_id,
+        file_path: asset.file_path,
+        mime_type: asset.mime_type,
+        width: asset.width ?? null,
+        height: asset.height ?? null,
+        alt_text: asset.alt_text ?? null,
+        caption: asset.caption ?? null,
+      })),
+      source,
+      parts: includeParts ? (childrenByParent.get(id) ?? []).map((part) => toQuestion(part, false)) : [],
+      created_at: q.created_at,
+      updated_at: q.updated_at,
+    };
+  };
+  const questionById = new Map(roots.map((q) => [String(q.question_id), q]));
+  return questionIds.map((id) => {
+    const q = questionById.get(id);
+    if (!q) throw new Error(`Question not found: ${id}`);
+    return toQuestion(q, true);
+  });
 }
 
 export function getQuestion(questionId: string): Promise<Question> {
@@ -628,6 +767,7 @@ export interface QuestionCreatePayload {
   solution?: BlockPayload[];
   marking_criteria?: BlockPayload[];
   mcq_options?: Array<{ content: BlockPayload[]; is_correct?: boolean }>;
+  parts?: Array<QuestionCreatePayload & { question_id?: string }>;
   source_name?: string;
   source_year?: number;
   source_institution?: string;
@@ -777,6 +917,10 @@ export async function createQuestion(payload: QuestionCreatePayload): Promise<Qu
   });
   await runMany(statements);
   await finalizeAssetsForStatements(questionId, statements);
+  for (const part of payload.parts ?? []) {
+    const { question_id: _questionId, parts: _parts, ...partPayload } = part;
+    await createQuestion({ ...partPayload, course_id: payload.course_id, parent_question_id: questionId });
+  }
   return hydrateQuestion(questionId);
 }
 
@@ -827,6 +971,15 @@ export async function updateQuestion(
       ]);
     }
   }
+  if (payload.mcq_options !== undefined) {
+    await run("DELETE FROM mcq_option WHERE question_id = ?", [questionId]);
+    const options: Array<[string, any[]]> = [];
+    payload.mcq_options.forEach((option, position) => options.push([
+      "INSERT INTO mcq_option (option_id, question_id, position, content_json, is_correct) VALUES (?, ?, ?, ?, ?)",
+      [newId("opt"), questionId, position, JSON.stringify(option.content ?? []), option.is_correct ? 1 : 0],
+    ]));
+    if (options.length) await runMany(options);
+  }
   const statements: Array<[string, any[]]> = [];
   for (const slot of SLOTS) {
     const value = (payload as any)[slot];
@@ -841,6 +994,21 @@ export async function updateQuestion(
   if (statements.length) {
     await runMany(statements);
     await finalizeAssetsForStatements(questionId, statements);
+  }
+  if (payload.parts !== undefined) {
+    const existingParts = await all<SqlRow>("SELECT question_id FROM question WHERE parent_question_id = ?", [questionId]);
+    const retainedIds = new Set(payload.parts.map((part) => part.question_id).filter((id): id is string => !!id));
+    for (const part of payload.parts) {
+      const { question_id: partId, parts: _parts, ...partPayload } = part;
+      if (partId && existingParts.some((row) => row.question_id === partId)) {
+        await updateQuestion(partId, partPayload);
+      } else {
+        await createQuestion({ ...partPayload, course_id: existing.course_id, parent_question_id: questionId });
+      }
+    }
+    for (const row of existingParts) {
+      if (!retainedIds.has(String(row.question_id))) await deleteQuestion(String(row.question_id));
+    }
   }
   return hydrateQuestion(questionId);
 }
@@ -871,6 +1039,27 @@ export async function deleteQuestion(questionId: string): Promise<void> {
   await run("DELETE FROM question WHERE question_id = ?", [questionId]);
 }
 
+/** Remove question content and its related data while preserving all course structure. */
+export async function clearQuestions(): Promise<void> {
+  // Clear references that do not cascade before deleting question trees.
+  await run("DELETE FROM practice_attempt");
+  await run("UPDATE import_question SET final_question_id = NULL");
+
+  const tests = await all<SqlRow>("SELECT test_id FROM generated_test");
+  for (const row of tests) await deleteTestOutputs(row.test_id);
+  await run("DELETE FROM generated_test");
+  await run("DELETE FROM import_question");
+  await run("DELETE FROM import_job");
+  await run("DELETE FROM practice_session");
+
+  const roots = await all<SqlRow>(
+    "SELECT question_id FROM question WHERE parent_question_id IS NULL"
+  );
+  for (const row of roots) await deleteAssetBlobsFor(String(row.question_id));
+  await run("DELETE FROM question");
+  await run("DELETE FROM source");
+}
+
 // ---------- listing / counts / random ----------
 
 const SORT_SQL: Record<string, string> = {
@@ -892,6 +1081,7 @@ export async function listQuestions(
     sort?: string;
     page?: number;
     page_size?: number;
+    source_filters?: Array<{ institution: string; years: number[] }>;
   } = {}
 ): Promise<QuestionListResponse> {
   const difficulty = filters.difficulty;
@@ -905,6 +1095,7 @@ export async function listQuestions(
     nodeIds: filters.node_id ? (Array.isArray(filters.node_id) ? filters.node_id : [filters.node_id]) : undefined,
     tag: filters.tag,
     q: filters.q,
+    institutionYears: filters.source_filters,
   });
   const whereSql = f.where.join(" AND ");
   const totalRow = await getFirst<SqlRow>(
@@ -936,9 +1127,62 @@ export async function listQuestions(
   return { total, page, page_size: pageSize, items };
 }
 
+export async function questionSourceOptions(courseId: string): Promise<{ institutions: Array<{ name: string; years: number[] }> }> {
+  const rows = await all<SqlRow>(
+    `SELECT s.year, COALESCE(NULLIF(TRIM(s.institution), ''), TRIM(s.name)) AS institution
+     FROM source s JOIN question q ON q.source_id = s.source_id
+     WHERE q.course_id = ? AND q.review_status = 'approved' AND q.parent_question_id IS NULL
+     GROUP BY COALESCE(NULLIF(TRIM(s.institution), ''), TRIM(s.name)), s.year
+     ORDER BY institution, COALESCE(s.year, 0) DESC`,
+    [courseId]
+  );
+  const byInstitution = new Map<string, Set<number>>();
+  for (const row of rows) {
+    if (row.institution == null) continue;
+    const years = byInstitution.get(String(row.institution)) ?? new Set<number>();
+    if (row.year != null) years.add(Number(row.year));
+    byInstitution.set(String(row.institution), years);
+  }
+  return { institutions: [...byInstitution].sort(([a], [b]) => a.localeCompare(b)).map(([name, years]) => ({ name, years: [...years].sort((a, b) => b - a) })) };
+}
+
+export async function renameInstitution(courseId: string, currentName: string, nextName: string): Promise<number> {
+  const trimmed = nextName.trim();
+  if (!trimmed) throw new Error("Institution name cannot be empty.");
+  const matchingSources = await all<SqlRow>(
+    `SELECT DISTINCT s.source_id, s.name, s.year, s.institution, s.original_question_no,
+       EXISTS(SELECT 1 FROM question other_q WHERE other_q.source_id = s.source_id AND other_q.course_id <> ?) AS shared
+     FROM source s JOIN question q ON q.source_id = s.source_id
+     WHERE q.course_id = ? AND COALESCE(NULLIF(TRIM(s.institution), ''), TRIM(s.name)) = ?`,
+    [courseId, courseId, currentName]
+  );
+  if (!matchingSources.length) return 0;
+  await transaction((database) => {
+    for (const source of matchingSources) {
+      const sourceId = String(source.source_id);
+      if (boolFrom(source, "shared")) {
+        const courseSourceId = newId("src");
+        database.run(
+          "INSERT INTO source (source_id, name, year, institution, original_question_no) VALUES (?, ?, ?, ?, ?)",
+          [courseSourceId, source.name, source.year ?? null, trimmed, source.original_question_no ?? null]
+        );
+        database.run("UPDATE question SET source_id = ? WHERE source_id = ? AND course_id = ?", [courseSourceId, sourceId, courseId]);
+      } else {
+        database.run("UPDATE source SET institution = ? WHERE source_id = ?", [trimmed, sourceId]);
+      }
+    }
+  });
+  return matchingSources.length;
+}
+
 export async function questionCounts(
   courseId: string,
-  opts: { type?: string | string[]; difficulty?: string | number } = {}
+  opts: {
+    type?: string | string[];
+    difficulty?: string | number;
+    difficulties?: Array<string | number>;
+    node_ids?: string[];
+  } = {}
 ): Promise<QuestionCountsResponse> {
   const f = buildFilters({
     courseId,
@@ -946,6 +1190,8 @@ export async function questionCounts(
     wholeQuestions: true,
     typeKey: opts.type,
     difficulty: opts.difficulty,
+    difficulties: opts.difficulties,
+    nodeIds: opts.node_ids,
   });
   const whereSql = f.where.join(" AND ");
   const totalRow = await getFirst<SqlRow>(
@@ -958,34 +1204,44 @@ export async function questionCounts(
     "SELECT * FROM course_node WHERE course_id = ? ORDER BY sort_order",
     [courseId]
   );
-  const nodeCounts = await all<SqlRow>(
-    `SELECT node_id, COUNT(*) AS c FROM question_classification
+  const nodeRows = await all<SqlRow>(
+    `SELECT node_id, question_id FROM question_classification
      WHERE question_id IN (SELECT question_id FROM question q WHERE ${whereSql})
-     GROUP BY node_id`,
+     `,
     f.params
   );
-  const countByNode = new Map<string, number>();
-  for (const r of nodeCounts) countByNode.set(r.node_id, Number(r.c));
+  const questionIdsByNode = new Map<string, Set<string>>();
+  for (const r of nodeRows) {
+    const ids = questionIdsByNode.get(r.node_id) ?? new Set<string>();
+    ids.add(String(r.question_id));
+    questionIdsByNode.set(r.node_id, ids);
+  }
   const byId = new Map(nodesRaw.map((n) => [n.node_id, n]));
-  const rollup = (id: string): NodeCount => {
+  const rollup = (id: string): { node: NodeCount; questionIds: Set<string> } => {
     const n = byId.get(id)!;
-    const own = countByNode.get(id) ?? 0;
-    const children = nodesRaw
+    const questionIds = new Set(questionIdsByNode.get(id) ?? []);
+    const childResults = nodesRaw
       .filter((c) => c.parent_node_id === id)
       .sort((a, b) => a.sort_order - b.sort_order)
       .map((c) => rollup(c.node_id));
+    for (const child of childResults) {
+      child.questionIds.forEach((questionId) => questionIds.add(questionId));
+    }
     return {
-      node_id: n.node_id,
-      name: n.name,
-      level_index: n.level_index,
-      count: own + children.reduce((sum, c) => sum + c.count, 0),
-      children,
+      node: {
+        node_id: n.node_id,
+        name: n.name,
+        level_index: n.level_index,
+        count: questionIds.size,
+        children: childResults.map((child) => child.node),
+      },
+      questionIds,
     };
   };
   const byNode = nodesRaw
     .filter((n) => n.parent_node_id === null)
     .sort((a, b) => a.sort_order - b.sort_order)
-    .map((n) => rollup(n.node_id));
+    .map((n) => rollup(n.node_id).node);
 
   const byTypeRows = await all<SqlRow>(
     `SELECT type_key, COUNT(*) AS c FROM question q WHERE ${whereSql} GROUP BY type_key`,
@@ -1012,6 +1268,7 @@ export async function randomQuestion(params: {
   tag?: string;
   exclude_question_ids?: Array<string | number>;
   exclude_recent_days?: number;
+  source_filters?: Array<{ institution: string; years: number[] }>;
 }): Promise<RandomQuestionResponse> {
   const difficulty = params.difficulty;
   const f = buildFilters({
@@ -1027,6 +1284,7 @@ export async function randomQuestion(params: {
         : [params.node_id]
       : undefined,
     tag: params.tag,
+    institutionYears: params.source_filters,
   });
   const where2 = [...f.where];
   const params2 = [...f.params];
@@ -1051,9 +1309,10 @@ export async function randomQuestion(params: {
   );
   const matchingCount = countRow ? Number(countRow.c) : 0;
   if (!matchingCount) return { matching_count: 0, question: null };
+  const offset = Math.floor(Math.random() * matchingCount);
   const row = await getFirst<SqlRow>(
-    `SELECT q.question_id FROM question q WHERE ${cond} ORDER BY RANDOM() LIMIT 1`,
-    params2
+    `SELECT q.question_id FROM question q WHERE ${cond} ORDER BY q.question_id LIMIT 1 OFFSET ?`,
+    [...params2, offset]
   );
   if (!row) return { matching_count: 0, question: null };
   const question = await hydrateQuestion(row.question_id);
@@ -1360,6 +1619,12 @@ export async function importJson(courseId: string, data: any): Promise<ImportRes
         await insertBlocks(parentId, slot, q[slot], statements);
       }
     }
+    (q.mcq_options ?? []).forEach((option: any, position: number) => {
+      statements.push([
+        "INSERT INTO mcq_option (option_id, question_id, position, content_json, is_correct) VALUES (?, ?, ?, ?, ?)",
+        [newId("opt"), parentId, position, JSON.stringify(option.content ?? []), option.is_correct ? 1 : 0],
+      ]);
+    });
     await runMany(statements);
     await finalizeAssetsForStatements(parentId, statements);
     for (const part of q.parts ?? []) {
@@ -1401,6 +1666,8 @@ export interface GenerateTestPayload {
   format?: "docx" | "pdf";
   shuffle?: boolean;
   sections?: TestSectionInput[];
+  selectionTimeoutMs?: number;
+  onProgress?: (progress: { phase: "selecting" | "hydrating" | "paper" | "solutions" | "preview" | "saving"; questionCount?: number }) => void;
 }
 
 async function matchingQuestionIds(
@@ -1414,6 +1681,7 @@ async function matchingQuestionIds(
     marks_min?: number;
     marks_max?: number;
     node_ids?: string[];
+    institutionYears?: Array<{ institution: string; years: number[] }>;
     limit?: number;
   }
 ): Promise<SqlRow[]> {
@@ -1429,6 +1697,7 @@ async function matchingQuestionIds(
     marksMin: opts.marks_min,
     marksMax: opts.marks_max,
     nodeIds: opts.node_ids,
+    institutionYears: opts.institutionYears,
   });
   const limitSql = opts.limit ? "LIMIT ?" : "";
   const params = opts.limit ? [...f.params, opts.limit] : f.params;
@@ -1438,6 +1707,32 @@ async function matchingQuestionIds(
     )} ORDER BY q.created_at ASC ${limitSql}`,
     params
   );
+}
+
+export async function estimateTestSections(
+  courseId: string,
+  sections: TestSectionInput[]
+): Promise<Array<{ question_count: number; available_marks: number }>> {
+  return Promise.all(sections.map(async (sec) => {
+    const opts = {
+      type_keys: sec.type_keys,
+      difficulties: sec.difficulties,
+      node_ids: sec.node_ids,
+      institutionYears: sec.source_filters,
+    };
+    const f = buildFilters({
+      courseId, approvedOnly: true, wholeQuestions: true,
+      typeKeys: opts.type_keys, difficulties: opts.difficulties, nodeIds: opts.node_ids, institutionYears: opts.institutionYears,
+    });
+    const row = await getFirst<SqlRow>(
+      `SELECT COUNT(*) AS question_count, COALESCE(SUM(q.marks), 0) AS available_marks FROM question q WHERE ${f.where.join(" AND ")} AND q.marks IS NOT NULL`,
+      f.params
+    );
+    return {
+      question_count: Number(row?.question_count ?? 0),
+      available_marks: round2(Number(row?.available_marks ?? 0)),
+    };
+  }));
 }
 
 function shuffleList<T>(items: T[]): T[] {
@@ -1456,79 +1751,116 @@ function round2(n: number): number {
 async function selectForMarks(
   courseId: string,
   target: number,
-  opts: Parameters<typeof matchingQuestionIds>[1]
-): Promise<Question[]> {
-  const rows = await matchingQuestionIds(courseId, opts);
-  const picked: Question[] = [];
-  let total = 0;
-  const bound = target + 1e-9;
-  for (const row of rows) {
-    const q = await hydrateQuestion(row.question_id);
-    if (q.marks == null) continue;
-    if (total + q.marks <= bound) {
-      total += q.marks;
-      picked.push(q);
+  opts: Parameters<typeof matchingQuestionIds>[1],
+  selectionDeadline = Infinity,
+  onHydrating?: () => void
+): Promise<{ questions: Question[]; selectionLimited: boolean }> {
+  const f = buildFilters({ courseId, approvedOnly: true, wholeQuestions: true, typeKeys: opts.type_keys, typeKey: opts.type_key, difficulties: opts.difficulties, difficultyMin: opts.difficulty_min, difficultyMax: opts.difficulty_max, marksMin: opts.marks_min, marksMax: opts.marks_max, nodeIds: opts.node_ids });
+  const rows = await all<SqlRow>(`SELECT q.question_id, q.marks FROM question q WHERE ${f.where.join(" AND ")} AND q.marks IS NOT NULL`, f.params);
+  // Shuffle only question IDs and marks in memory; full question data is loaded after selection.
+  for (let i = rows.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [rows[i], rows[j]] = [rows[j], rows[i]];
+  }
+  const targetUnits = Math.max(1, Math.round(target * 100));
+  const groups = new Map<number, number[]>();
+  rows.forEach((row, index) => {
+    const units = Math.max(1, Math.round(Number(row.marks) * 100));
+    const indexes = groups.get(units) ?? [];
+    indexes.push(index);
+    groups.set(units, indexes);
+  });
+  const bundles: Array<{ units: number; questionIndexes: number[] }> = [];
+  for (const [units, indexes] of groups) {
+    let offset = 0;
+    let power = 1;
+    while (offset < indexes.length) {
+      const count = Math.min(power, indexes.length - offset);
+      bundles.push({ units: units * count, questionIndexes: indexes.slice(offset, offset + count) });
+      offset += count;
+      power *= 2;
     }
   }
-  if (total < target - 1e-9) {
-    const remaining: Question[] = [];
-    const pickedIds = new Set(picked.map((p) => p.question_id));
-    for (const row of rows) {
-      if (pickedIds.has(row.question_id)) continue;
-      const q = await hydrateQuestion(row.question_id);
-      if (q.marks != null) remaining.push(q);
+  // A question worth more than the target can only make a combination worse
+  // than choosing that question by itself, so cap the subset-sum range at 2×target.
+  const maxQuestionUnits = [...groups.keys()]
+    .filter((units) => units <= targetUnits)
+    .reduce((max, units) => Math.max(max, units), 0);
+  const limit = targetUnits + maxQuestionUnits;
+  const reachable = [0];
+  const seen = new Set(reachable);
+  const parents = new Map<number, { previous: number; bundleIndex: number }>();
+  let best = 0;
+  let bestDistance = Infinity;
+  let bestPath: number[] = [];
+  let steps = 0;
+  let selectionLimited = false;
+  for (let bundleIndex = 0; bundleIndex < bundles.length; bundleIndex++) {
+    if (bundles[bundleIndex].questionIndexes.length !== 1) continue;
+    const distance = Math.abs(bundles[bundleIndex].units - targetUnits);
+    if (distance < bestDistance || (distance === bestDistance && bundles[bundleIndex].units < best)) {
+      best = bundles[bundleIndex].units;
+      bestDistance = distance;
+      bestPath = [bundleIndex];
     }
-    remaining.sort((a, b) => (a.marks ?? 0) - (b.marks ?? 0));
-    const tolerance = Math.max(1.0, target * 0.15);
-    for (const q of remaining) {
-      if (q.marks == null) continue;
-      if ((total + q.marks) - target <= tolerance) {
-        total += q.marks;
-        picked.push(q);
+  }
+  search: for (let bundleIndex = 0; bundleIndex < bundles.length && bestDistance !== 0; bundleIndex++) {
+    const bundle = bundles[bundleIndex];
+    for (const previous of reachable.slice()) {
+      if ((steps++ & 127) === 0 && performance.now() >= selectionDeadline) {
+        selectionLimited = true;
+        break search;
       }
+      const total = previous + bundle.units;
+      if (total > limit || seen.has(total)) continue;
+      seen.add(total);
+      reachable.push(total);
+      parents.set(total, { previous, bundleIndex });
+      const distance = Math.abs(total - targetUnits);
+      if (distance < bestDistance || (distance === bestDistance && total < best)) {
+        best = total;
+        bestDistance = distance;
+        bestPath = [bundleIndex];
+        for (let cursor = previous; cursor > 0;) {
+          const parent = parents.get(cursor);
+          if (!parent) break;
+          bestPath.push(parent.bundleIndex);
+          cursor = parent.previous;
+        }
+      }
+      if (bestDistance === 0) break search;
     }
   }
-  return picked;
-}
-
-async function selectN(
-  courseId: string,
-  count: number,
-  opts: Parameters<typeof matchingQuestionIds>[1]
-): Promise<Question[]> {
-  const rows = await matchingQuestionIds(courseId, { ...opts, limit: count });
-  const out: Question[] = [];
-  for (const row of rows) out.push(await hydrateQuestion(row.question_id));
-  return out;
+  const pickedRows = bestPath.flatMap((bundleIndex) =>
+    bundles[bundleIndex].questionIndexes.map((index) => rows[index])
+  );
+  onHydrating?.();
+  return {
+    questions: await hydrateQuestions(pickedRows.map((row) => String(row.question_id))),
+    selectionLimited,
+  };
 }
 
 async function sectionQuestions(
   courseId: string,
   index: number,
   sec: TestSectionInput,
-  config: CourseFullConfig
-): Promise<{ questions: Question[]; marks: number }> {
-  const hasCount = sec.count !== undefined && sec.count !== null;
+  config: CourseFullConfig,
+  selectionDeadline: number,
+  onHydrating: () => void
+): Promise<{ questions: Question[]; marks: number; selectionLimited: boolean }> {
   const hasMarks = sec.marks !== undefined && sec.marks !== null;
-  if (hasCount === hasMarks) {
-    throw new Error(`Section ${index}: set either a question count or a marks target.`);
-  }
+  if (!hasMarks) throw new Error(`Section ${index}: set a marks target.`);
   const opts = {
-    type_key: sec.type_key || undefined,
-    type_keys: sec.type_key ? undefined : sec.type_keys,
+    type_key: undefined,
+    type_keys: sec.type_keys,
     difficulties: sec.difficulties,
     node_ids: sec.node_ids,
+    institutionYears: sec.source_filters,
   };
   const display = sec.name || `Section ${index + 1}`;
-  let questions: Question[];
-  let secMarks: number;
-  if (hasCount) {
-    questions = await selectN(courseId, sec.count!, opts);
-    secMarks = round2(questions.reduce((sum, q) => sum + (q.marks ?? 0), 0));
-  } else {
-    questions = await selectForMarks(courseId, sec.marks!, opts);
-    secMarks = round2(questions.reduce((sum, q) => sum + (q.marks ?? 0), 0));
-  }
+  const { questions, selectionLimited } = await selectForMarks(courseId, sec.marks!, opts, selectionDeadline, onHydrating);
+  const secMarks = round2(questions.reduce((sum, q) => sum + (q.marks ?? 0), 0));
   if (!questions.length) {
     throw new Error(
       `No approved questions match ${display}. Try widening the topics/type filters, or set marks on matching questions.`
@@ -1536,7 +1868,7 @@ async function sectionQuestions(
   }
   const _ = config; // selection is course-scoped already
   void _;
-  return { questions, marks: secMarks };
+  return { questions, marks: secMarks, selectionLimited };
 }
 
 export async function generateTest(
@@ -1565,9 +1897,16 @@ export async function generateTest(
   const allQuestions: Question[] = [];
   const sectionQuestionsByWork: Array<{ label: string | null; questions: Question[] }> = [];
   let targetMarks = 0;
+  payload.onProgress?.({ phase: "selecting" });
+  const selectionDeadline = performance.now() + (payload.selectionTimeoutMs ?? Infinity);
+  const selected = await Promise.all(work.map((sec, i) => sectionQuestions(
+    courseId, i, sec, config, selectionDeadline,
+    () => payload.onProgress?.({ phase: "hydrating" })
+  )));
+  const questionCount = selected.reduce((sum, item) => sum + item.questions.length, 0);
   for (let i = 0; i < work.length; i++) {
     const sec = work[i];
-    const { questions, marks } = await sectionQuestions(courseId, i, sec, config);
+    const { questions, marks } = selected[i];
     const picked = payload.shuffle === false ? questions : shuffleList(questions);
     allQuestions.push(...picked);
     sectionQuestionsByWork.push({ label: sec.label, questions: picked });
@@ -1575,8 +1914,9 @@ export async function generateTest(
       name: sec.label ?? sec.display,
       question_count: picked.length,
       marks,
-      count_requested: sec.count ?? null,
+      count_requested: null,
       marks_requested: sec.marks ?? null,
+      selection_limited: selected[i].selectionLimited,
     });
     if (sec.marks !== undefined && sec.marks !== null) targetMarks += sec.marks;
   }
@@ -1599,7 +1939,9 @@ export async function generateTest(
     sectionResults,
     achievedMarks: achieved,
     sections: sectionQuestionsByWork,
+    onProgress: payload.onProgress,
   });
+  payload.onProgress?.({ phase: "saving", questionCount });
   await storeTestFiles(testId, files);
   const testUrl = (await ensureTestFileUrl(testId, "test")) ?? "";
   const solutionsUrl = (await ensureTestFileUrl(testId, "solutions")) ?? "";
@@ -1633,10 +1975,10 @@ export async function generateTest(
     target_marks: round2(targetMarks),
     achieved_marks: achieved,
     question_count: allQuestions.length,
-    created_at: nowUtc(),
     test_download_url: testUrl,
     solutions_download_url: solutionsUrl,
     preview_url: previewUrl,
+    created_at: nowUtc(),
     section_results: sectionResults,
   };
 }

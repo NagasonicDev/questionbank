@@ -40,6 +40,11 @@ class ImportSourceIn(BaseModel):
     original_question_no: str | None = None
 
 
+class ImportMcqOptionIn(BaseModel):
+    content: list[ImportBlockIn] = Field(default_factory=list)
+    is_correct: bool = False
+
+
 class ImportQuestionIn(BaseModel):
     type_key: str
     difficulty: int | None = None
@@ -47,6 +52,7 @@ class ImportQuestionIn(BaseModel):
     node_ids: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     body: list[ImportBlockIn] = Field(default_factory=list)
+    mcq_options: list[ImportMcqOptionIn] = Field(default_factory=list)
     answer: list[ImportBlockIn] = Field(default_factory=list)
     solution: list[ImportBlockIn] = Field(default_factory=list)
     marking_criteria: list[ImportBlockIn] = Field(default_factory=list)
@@ -188,6 +194,13 @@ def import_json(course_id: str, payload: ImportFileIn, db: Session = Depends(get
             db.add(models.QuestionTag(question_id=question.question_id, tag_id=tag.tag_id))
 
         _write_blocks(db, question.question_id, "body", q.body)
+        for position, option in enumerate(q.mcq_options):
+            db.add(models.McqOption(
+                question_id=question.question_id,
+                position=position,
+                content_json=json.dumps([block.model_dump() for block in option.content]),
+                is_correct=option.is_correct,
+            ))
         _write_blocks(db, question.question_id, "answer", q.answer)
         _write_blocks(db, question.question_id, "solution", q.solution)
         _write_blocks(db, question.question_id, "marking_criteria", q.marking_criteria)

@@ -118,6 +118,11 @@ def question_to_out(q: models.Question, include_parts: bool = True) -> schemas.Q
         node_ids=[c.node_id for c in q.classifications],
         tags=[qt.tag.name for qt in q.tags],
         body=_blocks_out(q.content_blocks, "body"),
+        mcq_options=[schemas.McqOptionOut(
+            position=o.position,
+            content=[schemas.ContentBlockIn(block_type=b["block_type"], content=b.get("content", {})) for b in json.loads(o.content_json)],
+            is_correct=o.is_correct,
+        ) for o in q.mcq_options],
         answer=_blocks_out(q.content_blocks, "answer"),
         solution=_blocks_out(q.content_blocks, "solution"),
         marking_criteria=_blocks_out(q.content_blocks, "marking_criteria"),
